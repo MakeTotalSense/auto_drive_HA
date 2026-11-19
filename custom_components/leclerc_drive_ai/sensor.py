@@ -25,6 +25,7 @@ async def async_setup_entry(
             LeclercStatusSensor(coordinator, entry),
             LeclercCartTotalSensor(coordinator, entry),
             LeclercAverageBasketSensor(coordinator, entry),
+            LeclercRemindersSensor(coordinator, entry),
         ]
     )
 
@@ -61,10 +62,18 @@ class LeclercStatusSensor(_BaseLeclercSensor):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
+        rep = self._coordinator.last_report or {}
         return {
             "orders_in_history": self._coordinator.orders_count,
             "cart_items_count": self._coordinator.cart_count,
-            "last_report": self._coordinator.last_report,
+            "saison_france": rep.get("saison_france"),
+            "derniere_commande": rep.get("derniere_commande"),
+            "mode_courses": rep.get("mode_courses"),
+            "articles_ajoutes": rep.get("added", []),
+            "articles_manquants": rep.get("missing", []),
+            "doutes_et_arbitrages": rep.get("doutes_et_arbitrages", []),
+            "rappels_oublis_habituels": rep.get("rappels_oublis_habituels", []),
+            "last_report": rep,
         }
 
 
@@ -97,3 +106,35 @@ class LeclercAverageBasketSensor(_BaseLeclercSensor):
     @property
     def native_value(self) -> float:
         return self._coordinator.avg_basket_eur
+
+
+class LeclercRemindersSensor(_BaseLeclercSensor):
+    _attr_name = "Rappels & Doutes Courses E.Leclerc"
+    _attr_icon = "mdi:bell-ring"
+
+    def __init__(self, coordinator: LeclercDriveCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_reminders_and_doubts"
+
+    @property
+    def native_value(self) -> str:
+        rep = self._coordinator.last_report or {}
+        missing_n = len(rep.get("missing", []))
+        doubts_n = len(rep.get("doutes_et_arbitrages", []))
+        rem_n = len(rep.get("rappels_oublis_habituels", []))
+        return f"{missing_n} manquant(s) | {doubts_n} doute(s) | {rem_n} rappel(s)"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        rep = self._coordinator.last_report or {}
+        return {
+            "saison_france": rep.get("saison_france"),
+            "mode_courses": rep.get("mode_courses"),
+            "articles_manquants_ou_introuvables": rep.get("missing", []),
+            "doutes_et_arbitrages_ia": rep.get("doutes_et_arbitrages", []),
+            "rappels_oublis_habituels": [
+                f"{r.get('name')} ({r.get('reason')})"
+                for r in rep.get("rappels_oublis_habituels", [])
+                if isinstance(r, dict)
+            ],
+        }

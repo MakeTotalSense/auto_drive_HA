@@ -128,7 +128,8 @@ def _product_subtype(norm_name: str) -> str:
     subtypes = [
         ("steak_hache", ("steak", "viande hachee")),
         ("cordon_bleu", ("cordon bleu", "cordons bleus")),
-        ("filet_poulet", ("filet de poulet", "filets de poulet", "aiguillette", "blanc de poulet")),
+        ("filet_poulet", ("filet de poulet", "filets de poulet", "aiguillette")),
+        ("blanc_poulet", ("blanc de poulet",)),
         ("boulette", ("boulette",)),
         ("kebab", ("kebab",)),
         ("nugget", ("nugget",)),
@@ -772,7 +773,7 @@ class LeclercDriveWorker:
         except Exception:
             return {"last_updated": None, "orders": []}
 
-    def compute_stats(self, max_products: int = 120) -> dict:
+    def compute_stats(self, max_products: int = 300) -> dict:
         data = self.load_history()
         orders = data.get("orders", [])
         if not orders:
@@ -783,6 +784,46 @@ class LeclercDriveWorker:
         avg_basket = round(sum(totals) / len(totals), 2) if totals else 0.0
 
         today = datetime.now().date()
+        order_dates = []
+        for o in sorted_orders:
+            d_str = o.get("date")
+            if d_str:
+                try:
+                    order_dates.append(datetime.strptime(d_str, "%Y-%m-%d").date())
+                except ValueError:
+                    pass
+
+        order_intervals = [
+            (order_dates[i] - order_dates[i - 1]).days
+            for i in range(1, len(order_dates))
+            if (order_dates[i] - order_dates[i - 1]).days > 0
+        ]
+        avg_days_between_orders = round(sum(order_intervals) / len(order_intervals), 1) if order_intervals else 14.0
+        last_order_date_str = sorted_orders[-1].get("date") if sorted_orders else None
+        days_since_last_order = (today - order_dates[-1]).days if order_dates else 14
+
+        if days_since_last_order <= 5:
+            shopping_mode = "appoint_recent"
+            shopping_mode_label = (
+                f"Courses rapprochées (dernière commande il y a {days_since_last_order}j le {last_order_date_str} "
+                "-> éviter de racheter les stocks de la dernière commande, quantités modérées)"
+            )
+        elif days_since_last_order >= max(18, int(avg_days_between_orders * 1.25)):
+            shopping_mode = "giga_courses_frigo_a_sec"
+            shopping_mode_label = (
+                f"Giga courses / Frigo à sec (dernière commande il y a {days_since_last_order}j le {last_order_date_str}, "
+                f"moyenne habituelle {avg_days_between_orders}j -> rechargement complet frais + surgelés)"
+            )
+        else:
+            shopping_mode = "courses_normales"
+            shopping_mode_label = (
+                f"Courses hebdomadaires normales (dernière commande il y a {days_since_last_order}j le {last_order_date_str}, "
+                f"moyenne habituelle {avg_days_between_orders}j -> rotation par rapport à la dernière commande)"
+            )
+
+        last_order_items = sorted_orders[-1].get("items", []) if sorted_orders else []
+        last_order_keys = {str(it.get("leclerc_id") or it.get("name", "")).strip() for it in last_order_items}
+
         product_history: dict[str, dict] = {}
 
         for order in sorted_orders:
@@ -821,13 +862,19 @@ class LeclercDriveWorker:
                         entry["dates"].append(order_date)
 
         summary_products = []
-        for entry in product_history.values():
+        for key, entry in product_history.items():
             dates = sorted(entry["dates"])
             intervals = [(dates[i] - dates[i - 1]).days for i in range(1, len(dates)) if (dates[i] - dates[i - 1]).days > 0]
             avg_interval = round(sum(intervals) / len(intervals), 1) if intervals else None
             days_since_last = (today - dates[-1]).days if dates else None
             suggested_qty = max(1, round(sum(entry["quantities"]) / len(entry["quantities"]))) if entry["quantities"] else 1
             avg_price = round(sum(entry["unit_prices"]) / len(entry["unit_prices"]), 2) if entry["unit_prices"] else 0.0
+            due_for_restock = bool(
+                entry["occurrences"] >= 3
+                and avg_interval is not None
+                and days_since_last is not None
+                and days_since_last >= max(7, avg_interval * 0.85)
+            )
 
             summary_products.append({
                 "leclerc_id": entry["leclerc_id"],
@@ -836,6 +883,8 @@ class LeclercDriveWorker:
                 "occurrences": entry["occurrences"],
                 "avg_interval_days": avg_interval,
                 "days_since_last": days_since_last,
+                "in_last_order": key in last_order_keys,
+                "due_for_restock": due_for_restock,
                 "suggested_qty": suggested_qty,
                 "unit_price": avg_price,
             })
@@ -844,7 +893,59 @@ class LeclercDriveWorker:
         return {
             "orders_count": len(sorted_orders),
             "avg_basket_eur": avg_basket,
+            "avg_days_between_orders": avg_days_between_orders,
+            "last_order_date": last_order_date_str,
+            "days_since_last_order": days_since_last_order,
+            "shopping_mode": shopping_mode,
+            "shopping_mode_label": shopping_mode_label,
+            "last_order_items": [it.get("name", "") for it in last_order_items if it.get("name")],
             "products": summary_products[:max_products],
+        }
+
+    def get_french_season_context(self) -> dict:
+        months = {
+            1: "Janvier", 2: "Février", 3: "Mars", 4: "Avril",
+            5: "Mai", 6: "Juin", 7: "Juillet", 8: "Août",
+            9: "Septembre", 10: "Octobre", 11: "Novembre", 12: "Décembre",
+        }
+        now = datetime.now()
+        m = now.month
+        month_name = months.get(m, "Novembre")
+
+        if m in (12, 1, 2):
+            season = "Hiver"
+            seasonal_veg = ("champignon", "poireau", "chou", "brocoli", "endive", "carotte", "butternut", "courge", "epinard", "salade", "laitue", "mache", "pomme de terre")
+            out_of_season_veg = ("tomate", "courgette", "concombre", "aubergine", "poivron")
+            seasonal_fruits = ("pomme", "poire", "kiwi", "mandarine", "clementine", "orange", "citron", "banane")
+            out_of_season_fruits = ("abricot", "nectarine", "peche", "fraise", "cerise", "melon", "myrtille", "prune", "raisin")
+        elif m in (3, 4, 5):
+            season = "Printemps"
+            seasonal_veg = ("asperge", "radis", "epinard", "salade", "laitue", "carotte", "champignon", "chou", "poireau", "brocoli", "pomme de terre")
+            out_of_season_veg = ("butternut", "courge", "tomate", "aubergine", "poivron")
+            seasonal_fruits = ("fraise", "pomme", "poire", "kiwi", "banane", "citron")
+            out_of_season_fruits = ("abricot", "nectarine", "peche", "melon", "raisin", "prune", "mandarine")
+        elif m in (6, 7, 8):
+            season = "Été"
+            seasonal_veg = ("tomate", "courgette", "concombre", "aubergine", "poivron", "haricot", "salade", "laitue", "roquette", "feuille de chene")
+            out_of_season_veg = ("endive", "butternut", "courge", "chou chinois", "poireau")
+            seasonal_fruits = ("abricot", "nectarine", "peche", "melon", "fraise", "cerise", "myrtille", "prune", "framboise")
+            out_of_season_fruits = ("mandarine", "clementine", "kiwi")
+        else:
+            season = "Automne"
+            seasonal_veg = ("champignon", "brocoli", "chou", "poireau", "carotte", "butternut", "courge", "epinard", "salade", "laitue", "feuille de chene", "endive", "pomme de terre")
+            out_of_season_veg = ("tomate", "concombre", "courgette", "aubergine", "poivron")
+            seasonal_fruits = ("pomme", "poire", "kiwi", "raisin", "mandarine", "clementine", "prune", "banane", "citron")
+            out_of_season_fruits = ("abricot", "nectarine", "peche", "fraise", "cerise", "melon")
+
+        return {
+            "date_str": now.strftime("%Y-%m-%d"),
+            "month_name": month_name,
+            "season": season,
+            "seasonal_veg": seasonal_veg,
+            "out_of_season_veg": out_of_season_veg,
+            "seasonal_fruits": seasonal_fruits,
+            "out_of_season_fruits": out_of_season_fruits,
+            "summary": f"{season} ({month_name} en France)",
         }
 
     def find_history_match(self, keep_item: str, products: list[dict]) -> dict | None:
@@ -869,17 +970,35 @@ class LeclercDriveWorker:
                 best_prod = prod
         return best_prod
 
-    def find_semantic_family_products(self, generic_item: str, products: list[dict]) -> list[dict]:
+    def find_semantic_family_products(
+        self,
+        generic_item: str,
+        products: list[dict],
+        stats: dict | None = None,
+        arbitrations_out: list[str] | None = None,
+    ) -> list[dict]:
+        stats = stats or {}
+        shopping_mode = stats.get("shopping_mode", "courses_normales")
+        last_order_date = stats.get("last_order_date", "récente")
+        season_ctx = self.get_french_season_context()
+
         m = re.search(r"\b(\d+)\b", generic_item)
         if m:
             count = max(1, min(6, int(m.group(1))))
         elif bool(set(_norm_text(generic_item).split()) & PLURAL_GENERIC_WORDS):
-            count = self.plural_count
+            if shopping_mode == "appoint_recent":
+                count = 2
+            elif shopping_mode == "giga_courses_frigo_a_sec":
+                count = max(3, self.plural_count + 1)
+            else:
+                count = self.plural_count
         else:
             count = 1
 
         norm_item = _norm_text(generic_item)
         matching_pool: list[dict] = []
+        skipped_seasonal: list[str] = []
+        skipped_last_order: list[str] = []
 
         for p in products:
             pname = _norm_text(p.get("name", ""))
@@ -890,11 +1009,11 @@ class LeclercDriveWorker:
                     w in pname
                     for w in (
                         "steak", "viande", "boeuf", "bovine", "cordon bleu", "cordons bleus",
-                        "filet de poulet", "filets de poulet", "aiguillette", "boulette",
-                        "chipolata", "merguez", "kebab", "nugget", "emince de porc", "dinde",
+                        "filet de poulet", "filets de poulet", "aiguillette", "blanc de poulet",
+                        "boulette", "chipolata", "merguez", "kebab", "nugget", "emince de porc", "dinde",
                     )
                 )
-                is_false = any(bad in pname for bad in ("chips", "saveur", "gout", "pizza", "gnocchi", "tortellini", "ravioli", "sauce"))
+                is_false = any(bad in pname for bad in ("chips", "saveur", "gout", "pizza", "gnocchi", "tortellini", "ravioli", "sauce", "grisons"))
                 if is_meat and not is_false:
                     matching_pool.append(p)
             elif "legume" in norm_item:
@@ -907,7 +1026,7 @@ class LeclercDriveWorker:
                         "pommes bicolores", "graines de", "pignons de", "cerises", "fraises",
                     )
                 )
-                if "frais" in norm_item:
+                if "frais" in norm_item or "saison" in norm_item:
                     is_veg = "fruits legumes" in pcat and not is_fruit_or_drink
                 else:
                     is_veg = ("fruits legumes" in pcat or "surgele" in pcat) and (
@@ -915,11 +1034,17 @@ class LeclercDriveWorker:
                         or any(v in pname for v in ("brocoli", "courgette", "champignon", "haricot", "epinard", "chou", "poireau"))
                     )
                 if is_veg and not is_fruit_or_drink and "fromage blanc" not in pname:
+                    if any(oos in pname for oos in season_ctx["out_of_season_veg"]):
+                        skipped_seasonal.append(p["name"].split(" - ")[0])
+                        continue
                     matching_pool.append(p)
             elif "fruit" in norm_item:
                 if "fruits legumes" in pcat and any(
                     f in pname for f in ("pomme", "poire", "banane", "kiwi", "abricot", "nectarine", "peche", "raisin", "fraise", "cerise", "melon", "myrtille", "prune", "mandarine", "mangue", "citron")
                 ) and "pomme de terre" not in pname and "pommes de terre" not in pname and "jus" not in pname:
+                    if any(oos in pname for oos in season_ctx["out_of_season_fruits"]):
+                        skipped_seasonal.append(p["name"].split(" - ")[0])
+                        continue
                     matching_pool.append(p)
             elif "fromage" in norm_item:
                 if any(w in pname for w in ("fromage", "chaource", "parmigiano", "parmesan", "boursin", "babybel", "emmental", "comte", "chevre", "mozzarella", "camembert")) and not any(
@@ -933,18 +1058,114 @@ class LeclercDriveWorker:
                 if any(w in pname for w in ("jambon", "lardon", "saucisson", "knack", "chorizo", "bacon")) and "gnocchi" not in pname:
                     matching_pool.append(p)
 
-        matching_pool.sort(key=lambda x: (-int(x.get("occurrences", 0)), -(x.get("days_since_last") or 0)))
-        selected: list[dict] = []
-        seen_subtypes: set[str] = set()
+        if skipped_seasonal and arbitrations_out is not None:
+            uniq_s = list(dict.fromkeys(skipped_seasonal))[:4]
+            arbitrations_out.append(
+                f"🍂 Saisonnalité ({season_ctx['summary']}) pour '{generic_item}' : hors-saison écartés ({', '.join(uniq_s)})."
+            )
+
+        subtype_totals: dict[str, int] = {}
         for p in matching_pool:
             st = _product_subtype(_norm_text(p.get("name", "")))
+            subtype_totals[st] = subtype_totals.get(st, 0) + int(p.get("occurrences", 0))
+
+        def smart_sort_key(prod: dict) -> tuple[int, int, int, int]:
+            in_last = bool(prod.get("in_last_order"))
+            pname = _norm_text(prod.get("name", ""))
+            st = _product_subtype(pname)
+            in_season = 1 if any(s in pname for s in (season_ctx["seasonal_veg"] + season_ctx["seasonal_fruits"])) else 0
+            return (0 if in_last else 1, in_season, subtype_totals.get(st, 0), int(prod.get("occurrences", 0)))
+
+        matching_pool.sort(key=smart_sort_key, reverse=True)
+
+        max_freezer_packs = 2 if shopping_mode == "giga_courses_frigo_a_sec" else 1
+        freezer_taken = 0
+        selected: list[dict] = []
+        seen_subtypes: set[str] = set()
+
+        for p in matching_pool:
+            pname = _norm_text(p.get("name", ""))
+            pcat = _norm_text(p.get("category") or "")
+            st = _product_subtype(pname)
             if st in seen_subtypes:
                 continue
+            if p.get("in_last_order") and len(matching_pool) > count:
+                skipped_last_order.append(p["name"].split(" - ")[0])
+                continue
+            is_big_freezer = "surgele" in pcat or any(k in pname for k in ("1kg", "600g", "x10", "x50", "cordon bleu", "cordons bleus", "kebab", "nugget"))
+            if "viande" in norm_item and is_big_freezer:
+                if freezer_taken >= max_freezer_packs:
+                    continue
+                freezer_taken += 1
+
             seen_subtypes.add(st)
             selected.append(p)
             if len(selected) >= count:
                 break
+
+        if len(selected) < count:
+            for p in matching_pool:
+                st = _product_subtype(_norm_text(p.get("name", "")))
+                if st not in seen_subtypes:
+                    seen_subtypes.add(st)
+                    selected.append(p)
+                    if len(selected) >= count:
+                        break
+
+        if skipped_last_order and arbitrations_out is not None:
+            uniq_l = list(dict.fromkeys(skipped_last_order))[:3]
+            arbitrations_out.append(
+                f"🔄 Rotation sur '{generic_item}' : {', '.join(uniq_l)} déjà acheté(s) à la dernière commande ({last_order_date}), écarté(s) pour varier."
+            )
+
         return selected
+
+    def detect_forgotten_staples(self, shopping_plan: list[dict], stats: dict, max_reminders: int = 6) -> list[dict]:
+        products = stats.get("products", [])
+        orders_count = max(1, int(stats.get("orders_count", 1)))
+        planned_ids = {str(s.get("preferred_leclerc_id") or "").strip() for s in shopping_plan if s.get("preferred_leclerc_id")}
+        planned_subtypes = {_product_subtype(_norm_text(s.get("search_query", ""))) for s in shopping_plan}
+        planned_queries_norm = [_norm_text(s.get("search_query", "")) for s in shopping_plan]
+
+        reminders: list[dict] = []
+        seen_subtypes: set[str] = set()
+
+        for p in products:
+            lid = str(p.get("leclerc_id") or "").strip()
+            pname = p.get("name", "")
+            pnorm = _norm_text(pname)
+            st = _product_subtype(pnorm)
+            occ = int(p.get("occurrences", 0))
+            days_last = p.get("days_since_last")
+            avg_int = p.get("avg_interval_days")
+
+            if (lid and lid in planned_ids) or st in planned_subtypes or st in seen_subtypes:
+                continue
+            if any(q and (q in pnorm or pnorm in q) for q in planned_queries_norm):
+                continue
+            if p.get("in_last_order") and (days_last is not None and days_last < 10):
+                continue
+
+            is_pillar = occ >= max(5, int(orders_count * 0.22))
+            is_overdue = bool(p.get("due_for_restock") and occ >= 4)
+
+            if is_pillar or is_overdue:
+                seen_subtypes.add(st)
+                freq_pct = round((occ / orders_count) * 100)
+                if avg_int and days_last is not None and days_last >= avg_int:
+                    reason = f"Acheté dans {occ}/{orders_count} commandes ({freq_pct}%), cycle ~{avg_int}j dépassé (dernier achat il y a {days_last}j)"
+                else:
+                    reason = f"Produit pilier acheté dans {occ}/{orders_count} commandes ({freq_pct}%), dernier achat il y a {days_last}j"
+                reminders.append({
+                    "leclerc_id": lid,
+                    "name": pname,
+                    "occurrences": occ,
+                    "days_since_last": days_last,
+                    "reason": reason,
+                })
+                if len(reminders) >= max_reminders:
+                    break
+        return reminders
 
     def _get_card_in_cart_qty(self, card) -> int:
         try:
