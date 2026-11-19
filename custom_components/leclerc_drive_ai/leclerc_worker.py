@@ -326,15 +326,36 @@ class LeclercDriveWorker:
                     const userName = userEl ? userEl.innerText.replace(/\\s+/g, ' ').trim() : '';
                     if (userName) isConnected = true;
 
-                    const countEl = document.querySelector('.spanWCRS381_Notification');
-                    const totalEl = document.querySelector('.strongWCRS381_Montant');
-                    const rawCount = countEl ? countEl.innerText.replace(/[^0-9]/g, '') : '0';
+                    let bestCount = 0;
+                    const countNodes = document.querySelectorAll('.spanWCRS381_Notification, [class*="WCRS381"][class*="Notification"], #divWCRS381_Panier span');
+                    for (const node of countNodes) {
+                        const txt = (node.innerText || '').trim();
+                        if (/^\\d+$/.test(txt)) {
+                            const val = parseInt(txt, 10);
+                            if (val > bestCount) bestCount = val;
+                        }
+                    }
+
+                    let bestTotal = '0,00 €';
+                    let bestTotalVal = 0.0;
+                    const totalNodes = document.querySelectorAll('.strongWCRS381_Montant, [class*="WCRS381"][class*="Montant"], #divWCRS381_Panier strong');
+                    for (const node of totalNodes) {
+                        const txt = (node.innerText || '').replace(/\\s+/g, ' ').trim();
+                        const m = txt.match(/(\\d+[.,]\\d{2})\\s*€/);
+                        if (m) {
+                            const val = parseFloat(m[1].replace(',', '.'));
+                            if (val >= bestTotalVal) {
+                                bestTotalVal = val;
+                                bestTotal = `${m[1].replace('.', ',')} €`;
+                            }
+                        }
+                    }
 
                     return {
                         connected: isConnected,
                         user_name: userName || (isConnected ? 'Client connecté' : ''),
-                        cart_count: parseInt(rawCount || '0', 10),
-                        cart_total: totalEl ? totalEl.innerText.replace(/\\s+/g, ' ').trim() : '0,00 €'
+                        cart_count: bestCount,
+                        cart_total: bestTotal
                     };
                 }
             """)
@@ -781,6 +802,33 @@ class LeclercDriveWorker:
                 break
         return selected
 
+    def _get_card_in_cart_qty(self, card) -> int:
+        try:
+            return int(
+                card.evaluate("""
+                    (cardEl) => {
+                        const isVis = (el) => {
+                            if (!el) return false;
+                            const s = window.getComputedStyle(el);
+                            if (s.display === 'none' || s.visibility === 'hidden' || parseFloat(s.opacity) === 0) return false;
+                            const r = el.getBoundingClientRect();
+                            return r.width > 2 && r.height > 2;
+                        };
+                        const lessBtn = cardEl.querySelector('a.aWCRS310_Less, button.aWCRS310_Less, [class*="WCRS310"][class*="Less"], [class*="WCRS310"][class*="Moins"]');
+                        if (!lessBtn || !isVis(lessBtn)) return 0;
+                        const container = lessBtn.parentElement || cardEl;
+                        for (const sp of container.querySelectorAll('span, p, div')) {
+                            const t = (sp.innerText || '').trim();
+                            if (/^\\d+$/.test(t)) return parseInt(t, 10);
+                        }
+                        return 1;
+                    }
+                """)
+                or 0
+            )
+        except Exception:
+            return 0
+
     def add_product_by_query(self, query: str, qty: int = 1, preferred_leclerc_id: str | None = None) -> dict:
         clean_query = query.strip()
         safe_qty = max(1, int(qty or 1))
@@ -864,6 +912,7 @@ class LeclercDriveWorker:
         chosen = candidates[target_idx]
         card = cards.nth(target_idx)
         before_state = self.get_cart_and_auth_state(page)
+        before_card_qty = self._get_card_in_cart_qty(card)
 
         # Pause humaine de lecture de la page (~3.5 à 5s) pour éviter le bridage de l'API E.Leclerc
         page.wait_for_timeout(int(random.uniform(3400, 4800)))
@@ -873,6 +922,7 @@ class LeclercDriveWorker:
         clicks_done = 0
         for unit_idx in range(safe_qty):
             unit_before = self.get_cart_and_auth_state(page)
+            card_qty_before = self._get_card_in_cart_qty(card)
             unit_confirmed = False
 
             for attempt in range(2):
@@ -887,15 +937,21 @@ class LeclercDriveWorker:
                             return r.width > 2 && r.height > 2;
                         };
                         const sels = [
+                            'a.aWCRS310_More', 'button.aWCRS310_More', 'span.spanWCRS310_More',
                             'a.aWCRS310_Plus', 'button.aWCRS310_Plus', 'a.aWCRS310_Add', 'a.aWCRS310_Ajouter',
-                            'a.aWCRS310_Panier', '.divWCRS310_Panier a', '.pWCRS310_Panier a',
+                            'a.aWCRS310_Panier',
+                            '[class*="WCRS310"][class*="More"]:not([class*="Variete"])',
                             '[class*="WCRS310"][class*="Plus"]:not([class*="Variete"])',
-                            '[class*="WCRS310"][class*="Panier"]:not([class*="List"]) a'
+                            '.divWCRS310_Panier a:not([class*="Less"]):not([class*="Moins"])',
+                            '.pWCRS310_Panier a:not([class*="Less"]):not([class*="Moins"])',
+                            '[class*="WCRS310"][class*="Panier"]:not([class*="List"]) a:not([class*="Less"]):not([class*="Moins"])'
                         ];
                         for (const sel of sels) {
                             for (const node of cardEl.querySelectorAll(sel)) {
-                                const sig = (node.className + ' ' + (node.id || '') + ' ' + (node.title || '')).toLowerCase();
-                                if (isVis(node) && !sig.includes('list') && !sig.includes('moins') && !node.classList.contains('aWCRS310_Product')) {
+                                const txt = (node.innerText || '').trim();
+                                if (txt === '-' || txt === '–' || txt === '−') continue;
+                                const sig = (node.className + ' ' + (node.id || '') + ' ' + (node.title || '') + ' ' + txt).toLowerCase();
+                                if (isVis(node) && !sig.includes('less') && !sig.includes('moins') && !sig.includes('list') && !node.classList.contains('aWCRS310_Product')) {
                                     node.setAttribute('data-leclerc-add-target', '1');
                                     return true;
                                 }
@@ -915,7 +971,8 @@ class LeclercDriveWorker:
 
                 for _ in range(7):
                     curr = self.get_cart_and_auth_state(page)
-                    if curr["cart_count"] > unit_before["cart_count"] or curr["cart_total"] != unit_before["cart_total"]:
+                    curr_card_q = self._get_card_in_cart_qty(card)
+                    if curr_card_q > card_qty_before or curr["cart_count"] > unit_before["cart_count"] or curr["cart_total"] != unit_before["cart_total"]:
                         unit_confirmed = True
                         break
                     page.wait_for_timeout(600)
@@ -929,6 +986,7 @@ class LeclercDriveWorker:
                 page.wait_for_timeout(int(random.uniform(2200, 3200)))
 
         after_state = self.get_cart_and_auth_state(page)
+        after_card_qty = self._get_card_in_cart_qty(card)
         page.wait_for_timeout(int(random.uniform(2500, 4000)))
 
         return {
@@ -938,7 +996,7 @@ class LeclercDriveWorker:
             "price": chosen["price"],
             "status": "added" if clicks_done > 0 else "add_button_not_found",
             "qty": safe_qty if clicks_done > 0 else 0,
-            "cart_verified": after_state["cart_count"] > before_state["cart_count"],
+            "cart_verified": (after_card_qty > before_card_qty or after_state["cart_count"] > before_state["cart_count"]),
             "cart_count_after": after_state["cart_count"],
             "cart_total_after": after_state["cart_total"],
         }
