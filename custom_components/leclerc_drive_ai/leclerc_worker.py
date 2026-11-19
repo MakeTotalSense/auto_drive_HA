@@ -380,6 +380,7 @@ class LeclercDriveWorker:
             try:
                 saved_cookies = json.loads(cookies_file.read_text(encoding="utf-8"))
                 if isinstance(saved_cookies, list) and saved_cookies:
+                    self._context.clear_cookies()
                     self._context.add_cookies(saved_cookies)
             except Exception as err:
                 _LOGGER.warning("Impossible de charger imported_cookies.json : %s", err)
@@ -409,6 +410,7 @@ class LeclercDriveWorker:
             cookies_file = self.storage_dir / "imported_cookies.json"
             cookies_file.write_text(json.dumps(cookies, ensure_ascii=False, indent=2), encoding="utf-8")
             if self._context is not None:
+                self._context.clear_cookies()
                 self._context.add_cookies(cookies)
             _LOGGER.info("E.Leclerc Drive : %d cookies de session importés avec succès.", len(cookies))
             return len(cookies)
