@@ -423,41 +423,68 @@ class LeclercDriveWorker:
                             "sameSite": same_site,
                         })
             else:
-                # Format 'document.cookie', 'Cookie: ...', 'Copy as cURL' ou valeur brute du cookie 'datadome'
-                cookie_line = cleaned
-                curl_match = re.search(r"(?:-b|--cookie|-H\s+['\"]cookie:)\s*['\"]?([^'\"]+)['\"]?", cleaned, re.IGNORECASE)
-                if curl_match:
-                    cookie_line = curl_match.group(1).strip()
-                elif cleaned.lower().startswith("cookie:"):
-                    cookie_line = cleaned.split(":", 1)[1].strip()
-
-                cookie_line = cookie_line.strip("'\"")
-                if "=" not in cookie_line and len(cookie_line) >= 30:
-                    # Valeur brute du cookie datadome copiée depuis F12 > Application > Cookies
-                    cookies.append({
-                        "name": "datadome",
-                        "value": cookie_line,
-                        "domain": ".leclercdrive.fr",
-                        "path": "/",
-                        "secure": True,
-                        "sameSite": "Lax",
-                    })
+                # Supporte :
+                # - 'Copier en tant que cURL (bash)' ou 'cURL (cmd)' depuis F12 > Réseau
+                # - 'Copier en tant que PowerShell' depuis F12 > Réseau
+                # - La ligne 'Cookie: ...' copiée depuis F12 > Réseau > En-têtes de la requête
+                # - 'copy(document.cookie)'
+                ps_cookies = re.findall(
+                    r'System\.Net\.Cookie\(\s*"([^"]+)"\s*,\s*"([^"]*)"',
+                    cleaned,
+                )
+                if ps_cookies:
+                    for k, v in ps_cookies:
+                        cookies.append({
+                            "name": k.strip(),
+                            "value": v.strip(),
+                            "domain": ".leclercdrive.fr",
+                            "path": "/",
+                            "secure": True,
+                            "sameSite": "Lax",
+                        })
                 else:
-                    for part in cookie_line.split(";"):
-                        part = part.strip()
-                        if "=" not in part:
-                            continue
-                        k, v = part.split("=", 1)
-                        k, v = k.strip(), v.strip()
-                        if k and v:
-                            cookies.append({
-                                "name": k,
-                                "value": v,
-                                "domain": ".leclercdrive.fr",
-                                "path": "/",
-                                "secure": True,
-                                "sameSite": "Lax",
-                            })
+                    cookie_line = cleaned
+                    # Si c'est une commande cURL (bash ou cmd Windows avec échappements ^)
+                    curl_match = re.search(
+                        r"(?:-b|--cookie|-H\s+\^?['\"]cookie\s*:)\s*([^\r\n]+)",
+                        cleaned,
+                        re.IGNORECASE,
+                    )
+                    if curl_match:
+                        cookie_line = curl_match.group(1).strip()
+                        # Retire la quote de fin et l'éventuel \ ou ^ de continuation de ligne
+                        cookie_line = re.sub(r"[\^\\]*['\"]\s*[\^\\]*$", "", cookie_line).strip()
+                        # Nettoie les échappements CMD Windows (^|, ^&, ^", ^^)
+                        cookie_line = re.sub(r"\^([|&\"^<>%])", r"\1", cookie_line)
+                    elif cleaned.lower().startswith("cookie:"):
+                        cookie_line = cleaned.split(":", 1)[1].strip()
+
+                    cookie_line = cookie_line.strip("'\"")
+                    if "=" not in cookie_line and len(cookie_line) >= 30:
+                        cookies.append({
+                            "name": "datadome",
+                            "value": cookie_line,
+                            "domain": ".leclercdrive.fr",
+                            "path": "/",
+                            "secure": True,
+                            "sameSite": "Lax",
+                        })
+                    else:
+                        for part in cookie_line.split(";"):
+                            part = part.strip()
+                            if "=" not in part:
+                                continue
+                            k, v = part.split("=", 1)
+                            k, v = k.strip(), v.strip()
+                            if k and v:
+                                cookies.append({
+                                    "name": k,
+                                    "value": v,
+                                    "domain": ".leclercdrive.fr",
+                                    "path": "/",
+                                    "secure": True,
+                                    "sameSite": "Lax",
+                                })
 
             if not isinstance(cookies, list) or not cookies:
                 return 0
@@ -475,10 +502,17 @@ class LeclercDriveWorker:
 
     def _dismiss_cookies(self, page) -> None:
         try:
-            btn = page.locator("#didomi-notice-agree-button")
+            btn = page.locator("#didomi-notice-agree-button, .didomi-continue-without-agreeing")
             if btn.count() > 0 and btn.first.is_visible():
                 btn.first.click(timeout=2000)
                 page.wait_for_timeout(400)
+            page.evaluate("""
+                () => {
+                    const host = document.getElementById('didomi-host');
+                    if (host) host.remove();
+                    document.body.classList.remove('didomi-popup-open');
+                }
+            """)
         except Exception:
             pass
 

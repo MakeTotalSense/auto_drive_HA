@@ -44,12 +44,13 @@ home_assistant/
 ### Étape 1/3 : Connexion à E.Leclerc Drive & Historique automatique
 - Saisissez votre **e-mail** et **mot de passe** E.Leclerc Drive.
 - **Magasin** : Vous pouvez laisser le champ **vide** (détection automatique du Drive rattaché à votre compte), saisir votre **Code Postal / Ville** (ex. `54500`, `Lyon`), ou coller l'**URL de votre Drive**.
-- **Que faire si E.Leclerc bloque la première connexion avec `captcha_blocked` (DataDome) ?**
-  Comme Home Assistant tourne dans un conteneur *headless* (sans écran pour faire glisser le puzzle Captcha DataDome), vous pouvez transférer votre cookie `datadome` en **10 secondes sans rien installer** :
-  1. Ouvrez [leclercdrive.fr](https://www.leclercdrive.fr/) sur votre navigateur habituel (Chrome, Edge, Firefox, Safari).
-  2. Appuyez sur **`F12`** → onglet **Console**, tapez **`copy(document.cookie)`** et appuyez sur **Entrée**.
-  3. Collez directement (`Ctrl+V`) dans le champ **« Cookies navigateur »** sur Home Assistant !
-  *(Le champ accepte aussi l'export JSON en 1 clic de l'extension navigateur **Cookie-Editor** ou un **Copier en tant que cURL** depuis l'onglet Réseau `F12`)*.
+- **Que faire si E.Leclerc bloque la première connexion avec `captcha_blocked` (DataDome / hCaptcha) ?**
+  Comme Home Assistant tourne dans un conteneur *headless* (sans écran), et que les cookies d'authentification E.Leclerc (`.XPRSDRVAUTH`, `AuthPerm`, `clsWMIT013:Cookie_Mitigation`) sont en `HttpOnly` (invisibles pour `document.cookie` dans la Console), vous pouvez transférer votre session complète en **10 secondes sans rien installer** :
+  1. Ouvrez votre Drive [leclercdrive.fr](https://www.leclercdrive.fr/) sur votre navigateur habituel (Chrome, Edge, Firefox) et **connectez-vous à votre compte**.
+  2. Appuyez sur **`F12`** → onglet **Réseau (Network)** → appuyez sur **`F5`** pour rafraîchir la page.
+  3. Faites un **clic droit sur la toute première ligne** (`accueil.aspx`) → **Copier** → **Copier en tant que cURL** (ou *Copier en tant que PowerShell*).
+  4. Collez directement (`Ctrl+V`) le tout dans le champ **« Session navigateur »** sur Home Assistant : l'intégration extrait automatiquement tous les cookies (y compris `datadome`, `Cookie_Mitigation` et `.XPRSDRVAUTH`) !
+  *(Alternative en 1 clic : avec l'extension navigateur **Cookie-Editor**, cliquez sur **Export → Export as JSON** et collez-le dans le champ).*
 - **Si E.Leclerc envoie un code de sécurité à 6 chiffres par e-mail**, une étape intermédiaire s'affiche dans Home Assistant : entrez les 6 chiffres, l'intégration coche automatiquement *"Ne plus demander sur cet appareil"* (`#deviceDeConfiance`).
 - Dès la connexion validée, l'intégration **parcourt toute seule votre page "Mes commandes"** en arrière-plan et enregistre vos 15 dernières commandes.
 

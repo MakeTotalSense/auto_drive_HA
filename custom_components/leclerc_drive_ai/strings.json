@@ -8,7 +8,7 @@
           "leclerc_email": "Adresse e-mail E.Leclerc Drive",
           "leclerc_password": "Mot de passe E.Leclerc Drive",
           "magasin_slug": "Ville, Code Postal ou URL de votre Drive (Optionnel : auto-détecté si vide)",
-          "session_token": "Cookies navigateur (Optionnel si Captcha DataDome : tapez copy(document.cookie) dans F12 > Console sur leclercdrive.fr)"
+          "session_token": "Session navigateur (Optionnel si Captcha : F12 > Réseau > Clic droit sur accueil.aspx > Copier > Copier en tant que cURL)"
         }
       },
       "otp": {
@@ -43,7 +43,7 @@
     "error": {
       "leclerc_auth_failed": "Échec technique de connexion à E.Leclerc Drive (consultez les journaux Home Assistant pour le détail).",
       "invalid_credentials": "E.Leclerc Drive a refusé cet e-mail ou ce mot de passe.",
-      "captcha_blocked": "Protection anti-bot DataDome activée sur Home Assistant : ouvrez leclercdrive.fr sur votre navigateur, faites F12 > Console, tapez copy(document.cookie) et collez le résultat dans le champ 'Cookies navigateur'.",
+      "captcha_blocked": "Protection anti-bot DataDome / hCaptcha activée sur Home Assistant : sur leclercdrive.fr (connecté), faites F12 > onglet Réseau (Network) > F5 > Clic droit sur la 1ère ligne > Copier > Copier en tant que cURL, et collez-le dans 'Session navigateur'.",
       "invalid_otp": "Code à 6 chiffres invalide ou expiré.",
       "missing_google_credentials": "Veuillez renseigner l'e-mail Google et le mot de passe d'application.",
       "google_keep_auth_failed": "Impossible d'authentifier Google Keep avec ce mot de passe d'application ou token."
