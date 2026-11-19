@@ -9,6 +9,7 @@ Inclut :
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -19,6 +20,7 @@ import subprocess
 import time
 import unicodedata
 import urllib.request
+import zlib
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote_plus, urljoin
@@ -373,8 +375,46 @@ class LeclercDriveWorker:
         self._context.add_init_script(
             "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
         )
+        cookies_file = self.storage_dir / "imported_cookies.json"
+        if cookies_file.exists():
+            try:
+                saved_cookies = json.loads(cookies_file.read_text(encoding="utf-8"))
+                if isinstance(saved_cookies, list) and saved_cookies:
+                    self._context.add_cookies(saved_cookies)
+            except Exception as err:
+                _LOGGER.warning("Impossible de charger imported_cookies.json : %s", err)
         self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
         return self._page
+
+    def import_session_token(self, token_str: str) -> int:
+        """
+        Décode un jeton 'LECLERC_HA_V1:...' (généré par export_ha_session.py sur le PC)
+        ou un JSON de cookies Playwright, le sauvegarde dans imported_cookies.json
+        et l'injecte dans le contexte navigateur courant.
+        """
+        cleaned = (token_str or "").strip()
+        if not cleaned:
+            return 0
+        try:
+            if cleaned.startswith("LECLERC_HA_V1:"):
+                b64_part = cleaned.split("LECLERC_HA_V1:", 1)[1].strip()
+                raw_json = zlib.decompress(base64.urlsafe_b64decode(b64_part)).decode("utf-8")
+                cookies = json.loads(raw_json)
+            else:
+                cookies = json.loads(cleaned)
+
+            if not isinstance(cookies, list) or not cookies:
+                return 0
+
+            cookies_file = self.storage_dir / "imported_cookies.json"
+            cookies_file.write_text(json.dumps(cookies, ensure_ascii=False, indent=2), encoding="utf-8")
+            if self._context is not None:
+                self._context.add_cookies(cookies)
+            _LOGGER.info("E.Leclerc Drive : %d cookies de session importés avec succès.", len(cookies))
+            return len(cookies)
+        except Exception as err:
+            _LOGGER.error("E.Leclerc Drive : Échec du décodage du jeton de session (%s)", err)
+            return 0
 
     def _dismiss_cookies(self, page) -> None:
         try:
@@ -460,25 +500,37 @@ class LeclercDriveWorker:
         except Exception:
             pass
 
-    def login_leclerc(self, email: str, password: str) -> dict:
+    def _is_datadome_or_captcha_page(self, page) -> bool:
+        """Détecte si DataDome (geo.captcha-delivery.com) bloque l'accès à la page."""
+        try:
+            html_head = page.content()[:4000].lower()
+            if "captcha-delivery.com" in html_head or "datadome captcha" in html_head:
+                return True
+            dd_iframe = page.locator("iframe[src*='captcha-delivery.com'], iframe[title*='DataDome' i]")
+            return dd_iframe.count() > 0
+        except Exception:
+            return False
+
+    def login_leclerc(self, email: str, password: str, session_token: str = "") -> dict:
         """
         Connecte automatiquement l'utilisateur à son compte E.Leclerc Drive depuis Home Assistant.
-        Détecte automatiquement son magasin rattaché (ou recherche sa Ville / Code Postal) s'il n'a pas fourni le slug.
+        Utilise les sélecteurs exacts de la popin WCLD312 (txtWCLD312_Login -> btnWCLD312_Continuer -> txtWCLD312_Mdp -> btnWCLD312_Valider)
+        et journalise chaque étape dans les logs Home Assistant.
         """
+        if session_token and session_token.strip():
+            self.import_session_token(session_token)
+
         page = self._get_page()
-        if self.magasin_slug:
-            home_url = f"https://{self.fd_shard}-courses.leclercdrive.fr/{self.magasin_slug}/accueil.aspx"
-        else:
-            home_url = "https://www.leclercdrive.fr/"
+        if session_token and session_token.strip():
+            self.import_session_token(session_token)
 
-        page.goto(home_url, wait_until="domcontentloaded")
-        page.wait_for_timeout(2000)
-        self._dismiss_cookies(page)
-        self._detect_store_on_page(page)
-
-        # Si l'utilisateur a saisi un Code Postal ou une Ville (ex: '54500' ou 'Lyon') sur www.leclercdrive.fr
+        # Si l'utilisateur a saisi un Code Postal ou une Ville (ex: '54500' ou 'Lyon'), on cherche d'abord son magasin
         if not self.magasin_slug and self.store_search_hint:
             try:
+                _LOGGER.info("E.Leclerc Drive : Recherche du magasin pour '%s'...", self.store_search_hint)
+                page.goto("https://www.leclercdrive.fr/", wait_until="domcontentloaded")
+                page.wait_for_timeout(2000)
+                self._dismiss_cookies(page)
                 search_inp = page.locator(
                     "input[placeholder*='code postal' i]:visible, input[placeholder*='ville' i]:visible, "
                     "input[id*='Recherche' i]:visible, input[class*='Recherche' i]:visible"
@@ -493,81 +545,190 @@ class LeclercDriveWorker:
                         choose_drive.click(timeout=4000)
                         page.wait_for_timeout(2500)
                         self._detect_store_on_page(page)
-            except Exception:
-                pass
+            except Exception as err:
+                _LOGGER.warning("E.Leclerc Drive : Recherche magasin '%s' ignorée (%s)", self.store_search_hint, err)
 
-        state = self.get_cart_and_auth_state(page)
-        if state["connected"]:
-            self._detect_store_on_page(page)
+        # IMPORTANT : E.Leclerc refuse l'authentification sur www.leclercdrive.fr sans magasin ('Avant de vous authentifier, veuillez sélectionner un Drive').
+        # On ouvre donc toujours l'accueil d'un magasin Drive pour afficher le bandeau WCSD334/WCLD312.
+        entry_slug = self.magasin_slug or "magasin-125401-125401-Vandoeuvre-les-Nancy"
+        home_url = f"https://{self.fd_shard}-courses.leclercdrive.fr/{entry_slug}/accueil.aspx"
+        _LOGGER.info("E.Leclerc Drive : Ouverture de %s", home_url)
+
+        page.goto(home_url, wait_until="domcontentloaded")
+        page.wait_for_timeout(2500)
+
+        if self._is_datadome_or_captcha_page(page):
+            _LOGGER.error(
+                "E.Leclerc Drive : Blocage anti-bot DataDome CAPTCHA détecté sur %s. "
+                "Comme Home Assistant tourne en mode headless (sans écran), copiez le jeton généré par "
+                "'export_ha_session.py' (fichier ha_session_token.txt sur votre PC) dans le champ 'Jeton de session' de l'intégration.",
+                page.url,
+            )
             self.close()
             return {
-                "status": "connected",
-                "user_name": state["user_name"],
-                "cart_total": state["cart_total"],
-                "detected_store": f"https://{self.fd_shard}-courses.leclercdrive.fr/{self.magasin_slug}" if self.magasin_slug else "",
+                "status": "captcha_blocked",
+                "message": "DataDome CAPTCHA détecté sur le navigateur headless de Home Assistant. Collez le jeton ha_session_token.txt généré sur votre PC.",
             }
 
-        # Clique sur 'Me connecter'
-        login_btn = page.locator("a.aWCSD334_NonConnecte, a:has-text('Me connecter'):visible").first
-        if login_btn.count() > 0 and login_btn.is_visible():
-            login_btn.click(timeout=4000)
-            page.wait_for_timeout(2500)
-
-        state = self.get_cart_and_auth_state(page)
-        if state["connected"]:
-            self._detect_store_on_page(page)
-            self.close()
-            return {
-                "status": "connected",
-                "user_name": state["user_name"],
-                "cart_total": state["cart_total"],
-                "detected_store": f"https://{self.fd_shard}-courses.leclercdrive.fr/{self.magasin_slug}" if self.magasin_slug else "",
-            }
-
-        # Remplit le champ email/login
-        email_input = page.locator(
-            "input[type='email']:visible, input[name*='Email' i]:visible, "
-            "input[name*='Login' i]:visible, input[id*='Email' i]:visible, input[id*='Login' i]:visible"
-        ).first
-        if email_input.count() > 0:
-            email_input.fill(email.strip())
-            page.wait_for_timeout(400)
-
-        pwd_input = page.locator("input[type='password']:visible").first
-        if pwd_input.count() == 0:
-            next_btn = page.locator("button[type='submit']:visible, input[type='submit']:visible, a.bouton-bleu:visible").first
-            if next_btn.count() > 0:
-                next_btn.click(timeout=3000)
-                page.wait_for_timeout(2000)
-            pwd_input = page.locator("input[type='password']:visible").first
-
-        if pwd_input.count() > 0:
-            pwd_input.fill(password)
-            page.wait_for_timeout(400)
-            submit_btn = page.locator(
-                "button[type='submit']:visible, input[type='submit']:visible, "
-                "a[id*='Valider' i]:visible, a[class*='Valider' i]:visible, button.bouton-bleu:visible"
-            ).first
-            if submit_btn.count() > 0:
-                submit_btn.click(timeout=4000)
-            else:
-                pwd_input.press("Enter")
-            page.wait_for_timeout(3500)
-
+        self._dismiss_cookies(page)
         self._detect_store_on_page(page)
 
-        # Vérifie si la popin de code à 6 chiffres par e-mail (#divPopinOTP) est affichée
-        otp_popin = page.locator("#divPopinOTP:visible, .otp-container:visible")
+        state = self.get_cart_and_auth_state(page)
+        if state["connected"]:
+            _LOGGER.info("E.Leclerc Drive : Session déjà connectée (%s)", state["user_name"])
+            self._detect_store_on_page(page)
+            self.close()
+            return {
+                "status": "connected",
+                "user_name": state["user_name"],
+                "cart_total": state["cart_total"],
+                "detected_store": f"https://{self.fd_shard}-courses.leclercdrive.fr/{self.magasin_slug}" if self.magasin_slug else "",
+            }
+
+        # 1. Clique sur 'Me connecter' (a.aWCSD334_NonConnecte) pour ouvrir la popin WCLD312
+        login_btn = page.locator("a.aWCSD334_NonConnecte, a:has-text('Me connecter'):visible").first
+        if login_btn.count() == 0:
+            _LOGGER.error(
+                "E.Leclerc Drive : Bouton 'Me connecter' (a.aWCSD334_NonConnecte) introuvable sur %s (titre='%s').",
+                page.url,
+                page.title(),
+            )
+            self.close()
+            return {"status": "login_failed", "message": "Bouton 'Me connecter' introuvable sur la page."}
+
+        _LOGGER.info("E.Leclerc Drive : Clic sur 'Me connecter'...")
+        login_btn.click(timeout=4000)
+        page.wait_for_timeout(2200)
+
+        state = self.get_cart_and_auth_state(page)
+        if state["connected"]:
+            self._detect_store_on_page(page)
+            self.close()
+            return {
+                "status": "connected",
+                "user_name": state["user_name"],
+                "cart_total": state["cart_total"],
+                "detected_store": f"https://{self.fd_shard}-courses.leclercdrive.fr/{self.magasin_slug}" if self.magasin_slug else "",
+            }
+
+        # 2. Remplit le champ e-mail (input.txtWCLD312_Login)
+        email_input = page.locator(
+            "input.txtWCLD312_Login:visible, input[id*='WCLD312_Login']:visible, "
+            "input[type='email']:visible, input[name*='Login' i]:visible"
+        ).first
+        if email_input.count() == 0:
+            _LOGGER.error("E.Leclerc Drive : Champ e-mail (txtWCLD312_Login) introuvable après clic sur 'Me connecter'.")
+            self.close()
+            return {"status": "login_failed", "message": "Champ e-mail introuvable."}
+
+        email_input.fill(email.strip())
+        page.wait_for_timeout(400)
+
+        # 3. Clique sur le bouton 'Continuer' (button.btnWCLD312_Continuer) qui déclenche verifierloginmitigation.ashz
+        pwd_input = page.locator("input.txtWCLD312_Mdp:visible, input[id*='WCLD312_Mdp']:visible, input[type='password']:visible").first
+        if pwd_input.count() == 0:
+            continuer_btn = page.locator(
+                "button.btnWCLD312_Continuer:visible, .btnWCLD312_Continuer:visible, "
+                "button:has-text('Continuer'):visible, button[type='submit']:visible"
+            ).first
+            if continuer_btn.count() > 0:
+                _LOGGER.info("E.Leclerc Drive : Clic sur 'Continuer' (btnWCLD312_Continuer)...")
+                continuer_btn.click(timeout=4000)
+            else:
+                email_input.press("Enter")
+
+            # Attend l'apparition du champ mot de passe (jusqu'à 4.5s)
+            for _ in range(9):
+                page.wait_for_timeout(500)
+                pwd_input = page.locator("input.txtWCLD312_Mdp:visible, input[id*='WCLD312_Mdp']:visible, input[type='password']:visible").first
+                if pwd_input.count() > 0:
+                    break
+
+        # Vérifie si hCaptcha (.divWCCD042_Captcha) est exigé par E.Leclerc
+        hcaptcha_visible = page.evaluate("""
+            () => {
+                const cap = document.querySelector('.divWCCD042_Captcha');
+                return Boolean(cap && !cap.classList.contains('masquer') && cap.offsetParent !== null);
+            }
+        """)
+        if hcaptcha_visible:
+            _LOGGER.error(
+                "E.Leclerc Drive : Le serveur demande un hCaptcha visuel dans la popin de connexion. "
+                "Collez le jeton ha_session_token.txt (généré par export_ha_session.py sur votre PC) dans le champ 'Jeton de session'."
+            )
+            self.close()
+            return {
+                "status": "captcha_blocked",
+                "message": "hCaptcha exigé par E.Leclerc Drive. Utilisez le jeton de session exporté depuis votre PC (ha_session_token.txt).",
+            }
+
+        if pwd_input.count() == 0:
+            _LOGGER.error("E.Leclerc Drive : Le champ mot de passe (txtWCLD312_Mdp) ne s'est pas affiché après 'Continuer'.")
+            self.close()
+            return {"status": "login_failed", "message": "Champ mot de passe non affiché."}
+
+        # 4. Saisit le mot de passe, coche 'Rester connecté' (chkWCLD312_ResterConnecte) et clique sur 'Me connecter' (btnWCLD312_Valider)
+        pwd_input.fill(password)
+        page.wait_for_timeout(350)
+
+        try:
+            stay_cb = page.locator("input.chkWCLD312_ResterConnecte")
+            if stay_cb.count() > 0 and not stay_cb.first.is_checked():
+                stay_cb.first.check(force=True)
+        except Exception:
+            pass
+
+        submit_btn = page.locator(
+            "button.btnWCLD312_Valider:visible, .btnWCLD312_Valider:visible, "
+            "button.bouton-action:has-text('Me connecter'):visible, button[type='submit']:visible"
+        ).first
+        if submit_btn.count() > 0:
+            _LOGGER.info("E.Leclerc Drive : Clic sur 'Me connecter' (btnWCLD312_Valider)...")
+            submit_btn.click(timeout=4000)
+        else:
+            pwd_input.press("Enter")
+
+        page.wait_for_timeout(4000)
+        self._detect_store_on_page(page)
+
+        # 5. Vérifie si la popin de code à 6 chiffres par e-mail (#divPopinOTP) est affichée
+        otp_popin = page.locator("#divPopinOTP:visible, .otp-container:visible, input.otp-input:visible")
         if otp_popin.count() > 0:
+            _LOGGER.info("E.Leclerc Drive : Code OTP à 6 chiffres par e-mail demandé par E.Leclerc (#divPopinOTP).")
             return {
                 "status": "otp_required",
                 "message": "Un code de sécurité à 6 chiffres a été envoyé par e-mail par E.Leclerc.",
             }
 
+        # 6. Vérifie si E.Leclerc affiche un message d'erreur (identifiants incorrects, magasin inconnu, etc.)
+        dom_error = page.evaluate("""
+            () => {
+                const selectors = [
+                    '.divWCLD312_IdIncorrects:not(.masquer)',
+                    '.divWCLD312_MaxTentatives:not(.masquer)',
+                    '.divWCLD312_MagasinInconnu:not(.masquer)',
+                    '.lblWCLD312_ErreurLogin:not(.masquer)',
+                    '.divWCSDCAP_MsgErreurCaptcha:not(.masquer)'
+                ];
+                for (const sel of selectors) {
+                    const el = document.querySelector(sel);
+                    if (el && el.innerText && el.innerText.trim()) return el.innerText.trim();
+                }
+                return '';
+            }
+        """)
+        if dom_error:
+            _LOGGER.error("E.Leclerc Drive : Refus affiché sur la page : %s", dom_error)
+            self.close()
+            if "robot" in dom_error.lower() or "captcha" in dom_error.lower():
+                return {"status": "captcha_blocked", "message": dom_error}
+            return {"status": "invalid_credentials", "message": dom_error}
+
         state = self.get_cart_and_auth_state(page)
         self._detect_store_on_page(page)
         self.close()
         if state["connected"]:
+            _LOGGER.info("E.Leclerc Drive : Authentification réussie pour %s !", state["user_name"])
             return {
                 "status": "connected",
                 "user_name": state["user_name"],
@@ -575,7 +736,8 @@ class LeclercDriveWorker:
                 "detected_store": f"https://{self.fd_shard}-courses.leclercdrive.fr/{self.magasin_slug}" if self.magasin_slug else "",
             }
 
-        return {"status": "login_failed", "message": "Impossible de valider la connexion automatiquement (vérifiez vos identifiants ou Captcha)."}
+        _LOGGER.error("E.Leclerc Drive : Non connecté après validation du formulaire (URL=%s).", page.url)
+        return {"status": "login_failed", "message": "Impossible de valider la connexion automatiquement."}
 
     def submit_leclerc_otp(self, otp_code: str) -> dict:
         """

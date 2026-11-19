@@ -7,6 +7,7 @@ PLATFORMS = ["button", "sensor"]
 CONF_LECLERC_EMAIL = "leclerc_email"
 CONF_LECLERC_PASSWORD = "leclerc_password"
 CONF_MAGASIN_SLUG = "magasin_slug"
+CONF_SESSION_TOKEN = "session_token"
 CONF_OTP_CODE = "otp_code"
 
 # Configuration Liste de courses (Google Keep ou Todo HA)

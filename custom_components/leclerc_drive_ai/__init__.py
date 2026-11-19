@@ -26,6 +26,7 @@ from .const import (
     CONF_OLLAMA_MODEL,
     CONF_OLLAMA_URL,
     CONF_PLURAL_ITEMS_COUNT,
+    CONF_SESSION_TOKEN,
     CONF_TODO_ENTITY_ID,
     DEFAULT_KEEP_NOTE_TITLE,
     DEFAULT_MAGASIN_SLUG,
@@ -213,6 +214,7 @@ class LeclercDriveCoordinator:
             self.worker.login_leclerc(
                 self.entry.data[CONF_LECLERC_EMAIL],
                 self.entry.data[CONF_LECLERC_PASSWORD],
+                self.entry.data.get(CONF_SESSION_TOKEN, ""),
             )
             return self.worker.auto_scrape_order_history(max_orders=15)
 
@@ -321,6 +323,7 @@ class LeclercDriveCoordinator:
                 self.worker.login_leclerc(
                     self.entry.data[CONF_LECLERC_EMAIL],
                     self.entry.data[CONF_LECLERC_PASSWORD],
+                    self.entry.data.get(CONF_SESSION_TOKEN, ""),
                 )
                 for step in shopping_plan:
                     res = self.worker.add_product_by_query(

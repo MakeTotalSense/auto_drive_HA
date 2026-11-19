@@ -26,6 +26,7 @@ from .const import (
     CONF_OLLAMA_URL,
     CONF_OTP_CODE,
     CONF_PLURAL_ITEMS_COUNT,
+    CONF_SESSION_TOKEN,
     CONF_TODO_ENTITY_ID,
     DEFAULT_KEEP_NOTE_TITLE,
     DEFAULT_MAGASIN_SLUG,
@@ -80,6 +81,7 @@ class LeclercDriveAIConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 worker.login_leclerc,
                 user_input[CONF_LECLERC_EMAIL],
                 user_input[CONF_LECLERC_PASSWORD],
+                user_input.get(CONF_SESSION_TOKEN, ""),
             )
 
             status = login_res.get("status")
@@ -92,13 +94,19 @@ class LeclercDriveAIConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 await self.hass.async_add_executor_job(worker.auto_scrape_order_history, 15)
                 return await self.async_step_shopping_list()
 
-            errors["base"] = "leclerc_auth_failed"
+            if status == "captcha_blocked":
+                errors["base"] = "captcha_blocked"
+            elif status == "invalid_credentials":
+                errors["base"] = "invalid_credentials"
+            else:
+                errors["base"] = "leclerc_auth_failed"
 
         schema = vol.Schema(
             {
                 vol.Required(CONF_LECLERC_EMAIL): str,
                 vol.Required(CONF_LECLERC_PASSWORD): str,
                 vol.Optional(CONF_MAGASIN_SLUG, default=""): str,
+                vol.Optional(CONF_SESSION_TOKEN, default=""): str,
             }
         )
         return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
