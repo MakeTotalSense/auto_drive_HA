@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+leclerc_session/
+debug_leclerc/
+history.json
+.DS_Store

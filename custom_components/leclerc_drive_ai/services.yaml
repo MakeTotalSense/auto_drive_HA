@@ -1,0 +1,12 @@
+fill_cart:
+  name: Remplir le panier E.Leclerc Drive
+  description: >
+    Lit la liste de courses (Google Keep ou Todo Home Assistant), traduit les catégories
+    génériques via l'historique et l'IA choisie (conversation.* ou qwen2.5:1.5b),
+    et ajoute automatiquement les produits au panier E.Leclerc Drive.
+
+sync_history:
+  name: Synchroniser l'historique des commandes
+  description: >
+    Se connecte à l'espace client E.Leclerc Drive et aspire automatiquement
+    les 15 dernières commandes dans history.json sans aucun clic manuel.

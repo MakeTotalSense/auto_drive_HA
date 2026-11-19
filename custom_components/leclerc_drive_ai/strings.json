@@ -1,0 +1,49 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "1/3 — Connexion à E.Leclerc Drive",
+        "description": "Entrez vos identifiants E.Leclerc Drive. L'intégration va se connecter et aspirer automatiquement l'historique de vos dernières commandes.",
+        "data": {
+          "leclerc_email": "Adresse e-mail E.Leclerc Drive",
+          "leclerc_password": "Mot de passe E.Leclerc Drive",
+          "magasin_slug": "Identifiant / Slug du magasin Drive"
+        }
+      },
+      "otp": {
+        "title": "Code de sécurité E.Leclerc (6 chiffres)",
+        "description": "E.Leclerc vient de vous envoyer un code à 6 chiffres par e-mail. Saisissez-le ci-dessous (la case 'Appareil de confiance' sera cochée automatiquement pour ne plus vous le redemander).",
+        "data": {
+          "otp_code": "Code à 6 chiffres reçu par e-mail"
+        }
+      },
+      "shopping_list": {
+        "title": "2/3 — Source de la liste de courses",
+        "description": "Pour Google Keep, entrez votre adresse Gmail et votre Mot de passe d'application Google de 16 caractères (généré dans Compte Google > Sécurité > Validation en 2 étapes > Mots de passe des applications) ou un Master Token.",
+        "data": {
+          "list_source": "Source de la liste de courses",
+          "google_email": "Adresse Gmail (Google Keep)",
+          "google_app_password": "Mot de passe d'application Google (16 lettres) ou Master Token",
+          "keep_note_title": "Titre de la note Google Keep",
+          "todo_entity_id": "Entité Todo Home Assistant (si source = Todo HA)"
+        }
+      },
+      "ai_model": {
+        "title": "3/3 — Choix du modèle IA",
+        "description": "Choisissez une entité conversation.* déjà configurée dans votre Home Assistant, ou utilisez par défaut le modèle ultra-léger qwen2.5:1.5b via Ollama.",
+        "data": {
+          "ai_provider": "Fournisseur IA / Entité Conversation",
+          "ollama_url": "URL du serveur Ollama (si Ollama sélectionné)",
+          "ollama_model": "Modèle Ollama par défaut",
+          "plural_items_count": "Nombre de produits variés à ajouter pour un terme au pluriel (ex: 'Viandes')"
+        }
+      }
+    },
+    "error": {
+      "leclerc_auth_failed": "Échec de connexion à E.Leclerc Drive (vérifiez vos identifiants).",
+      "invalid_otp": "Code à 6 chiffres invalide ou expiré.",
+      "missing_google_credentials": "Veuillez renseigner l'e-mail Google et le mot de passe d'application.",
+      "google_keep_auth_failed": "Impossible d'authentifier Google Keep avec ce mot de passe d'application ou token."
+    }
+  }
+}

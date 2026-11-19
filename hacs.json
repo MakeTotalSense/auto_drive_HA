@@ -1,0 +1,7 @@
+{
+  "name": "E.Leclerc Drive AI Assistant",
+  "content_in_root": false,
+  "render_readme": true,
+  "country": "FR",
+  "homeassistant": "2024.4.0"
+}
