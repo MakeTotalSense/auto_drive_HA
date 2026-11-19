@@ -3,11 +3,11 @@
     "step": {
       "user": {
         "title": "1/3 — Connexion à E.Leclerc Drive",
-        "description": "Entrez vos identifiants E.Leclerc Drive. L'intégration va se connecter et aspirer automatiquement l'historique de vos dernières commandes.",
+        "description": "Entrez vos identifiants E.Leclerc Drive. Pour le magasin, vous pouvez laisser vide (détection automatique du Drive rattaché à votre compte), taper votre Code Postal / Ville (ex: 54500), ou coller l'URL de votre Drive.",
         "data": {
           "leclerc_email": "Adresse e-mail E.Leclerc Drive",
           "leclerc_password": "Mot de passe E.Leclerc Drive",
-          "magasin_slug": "Identifiant / Slug du magasin Drive"
+          "magasin_slug": "Ville, Code Postal ou URL de votre Drive (Optionnel : auto-détecté si vide)"
         }
       },
       "otp": {

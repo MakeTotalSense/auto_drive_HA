@@ -15,6 +15,7 @@ import os
 import random
 import re
 import shutil
+import subprocess
 import time
 import unicodedata
 import urllib.request
@@ -178,6 +179,69 @@ def find_chrome_executable() -> str | None:
     return None
 
 
+def _ensure_playwright_runtime() -> str | None:
+    """
+    Sur Home Assistant (Alpine Linux / Python 3.14), la roue musllinux de Playwright
+    n'embarque pas Node.js ni Chromium par défaut.
+    Cette fonction :
+    1. Vérifie la présence de 'node' et 'chromium' (et les installe automatiquement via apk/apt si absents).
+    2. Définit automatiquement PLAYWRIGHT_NODEJS_PATH=/usr/bin/node avant de lancer Playwright.
+    """
+    node_bin = os.environ.get("PLAYWRIGHT_NODEJS_PATH") or shutil.which("node") or shutil.which("nodejs")
+    chrome_bin = find_chrome_executable()
+
+    if (not node_bin or not Path(node_bin).exists()) or not chrome_bin:
+        if Path("/sbin/apk").exists():
+            _LOGGER.info("Installation automatique de nodejs et chromium dans le conteneur Alpine Home Assistant...")
+            subprocess.run(
+                [
+                    "/sbin/apk", "add", "--no-cache",
+                    "nodejs", "chromium", "nss", "freetype",
+                    "harfbuzz", "ca-certificates", "ttf-freefont",
+                ],
+                check=False,
+            )
+        elif Path("/usr/bin/apt-get").exists():
+            _LOGGER.info("Installation automatique de nodejs et chromium via apt-get...")
+            subprocess.run(["/usr/bin/apt-get", "update"], check=False)
+            subprocess.run(["/usr/bin/apt-get", "install", "-y", "nodejs", "chromium"], check=False)
+
+        node_bin = shutil.which("node") or shutil.which("nodejs") or "/usr/bin/node"
+        chrome_bin = find_chrome_executable()
+
+    if node_bin and Path(node_bin).exists():
+        os.environ["PLAYWRIGHT_NODEJS_PATH"] = str(node_bin)
+
+    return chrome_bin
+
+
+def parse_store_input(raw_input: str) -> tuple[str, str | None, str | None]:
+    """
+    Analyse ce que l'utilisateur a saisi pour son magasin :
+    - Soit une URL complète copiée depuis son navigateur :
+      ex: 'https://fd8-courses.leclercdrive.fr/magasin-012301-012301-Bourg-en-Bresse/accueil.aspx'
+      -> retourne (shard='fd8', slug='magasin-012301-012301-Bourg-en-Bresse', search_query=None)
+    - Soit un slug direct :
+      ex: 'magasin-125401-125401-Vandoeuvre-les-Nancy'
+      -> retourne (shard='fd2', slug='magasin-125401-125401-Vandoeuvre-les-Nancy', search_query=None)
+    - Soit une Ville ou un Code Postal (ou vide) :
+      ex: '54500', 'Bordeaux', ''
+      -> retourne (shard='fd2', slug=None, search_query='54500') pour détection automatique !
+    """
+    cleaned = (raw_input or "").strip()
+    shard_match = re.search(r"(fd\d+)-(?:courses|espace-client)\.leclercdrive\.fr", cleaned, re.IGNORECASE)
+    shard = shard_match.group(1).lower() if shard_match else "fd2"
+
+    slug_match = re.search(r"(magasin-\d+-(?:\d+-)?[A-Za-z0-9_-]+)", cleaned)
+    if slug_match:
+        slug = slug_match.group(1).rstrip("/")
+        if slug.endswith(".aspx"):
+            slug = slug[:-5]
+        return shard, slug, None
+
+    return shard, None, (cleaned if cleaned else None)
+
+
 def resolve_google_keep_master_token(google_email: str, secret_or_token: str) -> str:
     """
     Convertit automatiquement un Mot de passe d'application Google (16 caractères)
@@ -229,17 +293,28 @@ def fetch_google_keep_items(google_email: str, master_token: str, note_title: st
 class LeclercDriveWorker:
     """Gère la session Playwright, l'historique et le panier E.Leclerc Drive."""
 
-    def __init__(self, storage_dir: Path, magasin_slug: str, plural_count: int = 3) -> None:
+    def __init__(self, storage_dir: Path, magasin_slug: str = "", plural_count: int = 3) -> None:
         self.storage_dir = Path(storage_dir)
         self.storage_dir.mkdir(parents=True, exist_ok=True)
         self.session_dir = self.storage_dir / "leclerc_session"
         self.history_file = self.storage_dir / "history.json"
-        self.magasin_slug = magasin_slug.strip("/")
+
+        shard, parsed_slug, search_hint = parse_store_input(magasin_slug)
+        self.fd_shard = shard
+        self.magasin_slug = parsed_slug or ""
+        self.store_search_hint = search_hint
         self.plural_count = max(1, int(plural_count or 3))
 
         self._playwright = None
         self._context = None
         self._page = None
+
+    def _update_store_from_url(self, current_url: str) -> None:
+        """Extrait automatiquement le serveur régional (fd1..fd16) et le slug du magasin depuis l'URL courante."""
+        shard, slug, _ = parse_store_input(current_url)
+        if slug:
+            self.fd_shard = shard
+            self.magasin_slug = slug
 
     def _cleanup_locks(self) -> None:
         for lock_name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
@@ -267,6 +342,8 @@ class LeclercDriveWorker:
         self._cleanup_locks()
 
     def _get_page(self):
+        # Configure automatiquement PLAYWRIGHT_NODEJS_PATH et installe nodejs/chromium si nécessaire sur Alpine HA
+        chrome_exe = _ensure_playwright_runtime()
         from playwright.sync_api import sync_playwright
 
         if self._context is not None and self._page is not None:
@@ -279,7 +356,6 @@ class LeclercDriveWorker:
 
         self._cleanup_locks()
         self._playwright = sync_playwright().start()
-        chrome_exe = find_chrome_executable()
 
         launch_kwargs = {
             "user_data_dir": str(self.session_dir),
@@ -362,34 +438,90 @@ class LeclercDriveWorker:
         except Exception:
             return {"connected": False, "user_name": "", "cart_count": 0, "cart_total": "0,00 €"}
 
+    def _detect_store_on_page(self, page) -> None:
+        """Extrait le serveur régional (fdX) et le slug (magasin-...) depuis l'URL courante ou les liens de la page."""
+        self._update_store_from_url(page.url)
+        if self.magasin_slug:
+            return
+        try:
+            detected_href = page.evaluate("""
+                () => {
+                    const links = Array.from(document.querySelectorAll('a[href*="magasin-"]'));
+                    for (const a of links) {
+                        const h = a.href || a.getAttribute('href') || '';
+                        if (/magasin-\\d+/i.test(h)) return h;
+                    }
+                    return '';
+                }
+            """)
+            if detected_href:
+                self._update_store_from_url(detected_href)
+        except Exception:
+            pass
+
     def login_leclerc(self, email: str, password: str) -> dict:
         """
         Connecte automatiquement l'utilisateur à son compte E.Leclerc Drive depuis Home Assistant.
-        Si E.Leclerc demande un code OTP à 6 chiffres envoyé par e-mail (#divPopinOTP),
-        garde la page ouverte et retourne {'status': 'otp_required'} pour que Home Assistant
-        affiche le champ de saisie du code à 6 chiffres.
+        Détecte automatiquement son magasin rattaché (ou recherche sa Ville / Code Postal) s'il n'a pas fourni le slug.
         """
         page = self._get_page()
-        home_url = f"https://fd2-courses.leclercdrive.fr/{self.magasin_slug}/accueil.aspx"
+        if self.magasin_slug:
+            home_url = f"https://{self.fd_shard}-courses.leclercdrive.fr/{self.magasin_slug}/accueil.aspx"
+        else:
+            home_url = "https://www.leclercdrive.fr/"
+
         page.goto(home_url, wait_until="domcontentloaded")
         page.wait_for_timeout(2000)
         self._dismiss_cookies(page)
+        self._detect_store_on_page(page)
+
+        # Si l'utilisateur a saisi un Code Postal ou une Ville (ex: '54500' ou 'Lyon') sur www.leclercdrive.fr
+        if not self.magasin_slug and self.store_search_hint:
+            try:
+                search_inp = page.locator(
+                    "input[placeholder*='code postal' i]:visible, input[placeholder*='ville' i]:visible, "
+                    "input[id*='Recherche' i]:visible, input[class*='Recherche' i]:visible"
+                ).first
+                if search_inp.count() > 0:
+                    search_inp.fill(self.store_search_hint)
+                    page.wait_for_timeout(1200)
+                    search_inp.press("Enter")
+                    page.wait_for_timeout(2500)
+                    choose_drive = page.locator("a[href*='magasin-']:visible").first
+                    if choose_drive.count() > 0:
+                        choose_drive.click(timeout=4000)
+                        page.wait_for_timeout(2500)
+                        self._detect_store_on_page(page)
+            except Exception:
+                pass
 
         state = self.get_cart_and_auth_state(page)
         if state["connected"]:
+            self._detect_store_on_page(page)
             self.close()
-            return {"status": "connected", "user_name": state["user_name"], "cart_total": state["cart_total"]}
+            return {
+                "status": "connected",
+                "user_name": state["user_name"],
+                "cart_total": state["cart_total"],
+                "detected_store": f"https://{self.fd_shard}-courses.leclercdrive.fr/{self.magasin_slug}" if self.magasin_slug else "",
+            }
 
         # Clique sur 'Me connecter'
-        login_btn = page.locator("a.aWCSD334_NonConnecte")
-        if login_btn.count() > 0 and login_btn.first.is_visible():
-            login_btn.first.click(timeout=4000)
+        login_btn = page.locator("a.aWCSD334_NonConnecte, a:has-text('Me connecter'):visible").first
+        if login_btn.count() > 0 and login_btn.is_visible():
+            login_btn.click(timeout=4000)
             page.wait_for_timeout(2500)
 
         state = self.get_cart_and_auth_state(page)
         if state["connected"]:
+            self._detect_store_on_page(page)
             self.close()
-            return {"status": "connected", "user_name": state["user_name"], "cart_total": state["cart_total"]}
+            return {
+                "status": "connected",
+                "user_name": state["user_name"],
+                "cart_total": state["cart_total"],
+                "detected_store": f"https://{self.fd_shard}-courses.leclercdrive.fr/{self.magasin_slug}" if self.magasin_slug else "",
+            }
 
         # Remplit le champ email/login
         email_input = page.locator(
@@ -400,7 +532,6 @@ class LeclercDriveWorker:
             email_input.fill(email.strip())
             page.wait_for_timeout(400)
 
-        # Certains flux OIDC demandent de cliquer sur 'Continuer' après l'email avant d'afficher le mot de passe
         pwd_input = page.locator("input[type='password']:visible").first
         if pwd_input.count() == 0:
             next_btn = page.locator("button[type='submit']:visible, input[type='submit']:visible, a.bouton-bleu:visible").first
@@ -422,19 +553,26 @@ class LeclercDriveWorker:
                 pwd_input.press("Enter")
             page.wait_for_timeout(3500)
 
+        self._detect_store_on_page(page)
+
         # Vérifie si la popin de code à 6 chiffres par e-mail (#divPopinOTP) est affichée
         otp_popin = page.locator("#divPopinOTP:visible, .otp-container:visible")
         if otp_popin.count() > 0:
-            # On NE ferme PAS le navigateur pour pouvoir soumettre le code OTP à l'étape suivante du Config Flow
             return {
                 "status": "otp_required",
                 "message": "Un code de sécurité à 6 chiffres a été envoyé par e-mail par E.Leclerc.",
             }
 
         state = self.get_cart_and_auth_state(page)
+        self._detect_store_on_page(page)
         self.close()
         if state["connected"]:
-            return {"status": "connected", "user_name": state["user_name"], "cart_total": state["cart_total"]}
+            return {
+                "status": "connected",
+                "user_name": state["user_name"],
+                "cart_total": state["cart_total"],
+                "detected_store": f"https://{self.fd_shard}-courses.leclercdrive.fr/{self.magasin_slug}" if self.magasin_slug else "",
+            }
 
         return {"status": "login_failed", "message": "Impossible de valider la connexion automatiquement (vérifiez vos identifiants ou Captcha)."}
 
@@ -456,7 +594,6 @@ class LeclercDriveWorker:
                     otp_inputs.nth(i).fill(digits[i])
                     page.wait_for_timeout(100)
 
-            # Coche 'En cochant cette case, vous n'aurez plus à saisir de code de sécurité sur cet appareil'
             trust_cb = page.locator("#deviceDeConfiance")
             if trust_cb.count() > 0 and not trust_cb.first.is_checked():
                 trust_cb.first.check(force=True)
@@ -466,9 +603,15 @@ class LeclercDriveWorker:
                 valider_btn.click(timeout=4000)
                 page.wait_for_timeout(3500)
 
+            self._detect_store_on_page(page)
             state = self.get_cart_and_auth_state(page)
             if state["connected"]:
-                return {"status": "connected", "user_name": state["user_name"], "cart_total": state["cart_total"]}
+                return {
+                    "status": "connected",
+                    "user_name": state["user_name"],
+                    "cart_total": state["cart_total"],
+                    "detected_store": f"https://{self.fd_shard}-courses.leclercdrive.fr/{self.magasin_slug}" if self.magasin_slug else "",
+                }
             return {"status": "otp_failed", "message": "Code refusé ou expiré."}
         finally:
             self.close()
@@ -480,7 +623,8 @@ class LeclercDriveWorker:
         """
         page = self._get_page()
         try:
-            orders_url = f"https://fd2-espace-client.leclercdrive.fr/drive/{self.magasin_slug}/mes-commandes.aspx"
+            slug_part = self.magasin_slug or "magasin-125401-125401-Vandoeuvre-les-Nancy"
+            orders_url = f"https://{self.fd_shard}-espace-client.leclercdrive.fr/drive/{slug_part}/mes-commandes.aspx"
             page.goto(orders_url, wait_until="domcontentloaded")
             page.wait_for_timeout(2500)
             self._dismiss_cookies(page)
@@ -834,7 +978,8 @@ class LeclercDriveWorker:
         safe_qty = max(1, int(qty or 1))
         page = self._get_page()
 
-        url = f"https://fd2-courses.leclercdrive.fr/{self.magasin_slug}/recherche.aspx?TexteRecherche={quote_plus(clean_query)}"
+        slug_part = self.magasin_slug or "magasin-125401-125401-Vandoeuvre-les-Nancy"
+        url = f"https://{self.fd_shard}-courses.leclercdrive.fr/{slug_part}/recherche.aspx?TexteRecherche={quote_plus(clean_query)}"
         page.goto(url, wait_until="domcontentloaded")
         page.wait_for_timeout(2000)
         self._dismiss_cookies(page)

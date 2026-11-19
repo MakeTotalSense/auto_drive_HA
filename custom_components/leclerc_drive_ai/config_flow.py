@@ -83,6 +83,8 @@ class LeclercDriveAIConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             )
 
             status = login_res.get("status")
+            if login_res.get("detected_store"):
+                self._data[CONF_MAGASIN_SLUG] = login_res["detected_store"]
             if status == "otp_required":
                 return await self.async_step_otp()
             if status == "connected":
@@ -96,7 +98,7 @@ class LeclercDriveAIConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             {
                 vol.Required(CONF_LECLERC_EMAIL): str,
                 vol.Required(CONF_LECLERC_PASSWORD): str,
-                vol.Required(CONF_MAGASIN_SLUG, default=DEFAULT_MAGASIN_SLUG): str,
+                vol.Optional(CONF_MAGASIN_SLUG, default=""): str,
             }
         )
         return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
@@ -112,6 +114,8 @@ class LeclercDriveAIConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 user_input[CONF_OTP_CODE],
             )
             if otp_res.get("status") == "connected":
+                if otp_res.get("detected_store"):
+                    self._data[CONF_MAGASIN_SLUG] = otp_res["detected_store"]
                 await self.hass.async_add_executor_job(worker.auto_scrape_order_history, 15)
                 return await self.async_step_shopping_list()
             errors["base"] = "invalid_otp"
