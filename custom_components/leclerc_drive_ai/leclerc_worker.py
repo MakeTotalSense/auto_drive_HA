@@ -389,20 +389,75 @@ class LeclercDriveWorker:
 
     def import_session_token(self, token_str: str) -> int:
         """
-        Décode un jeton 'LECLERC_HA_V1:...' (généré par export_ha_session.py sur le PC)
-        ou un JSON de cookies Playwright, le sauvegarde dans imported_cookies.json
-        et l'injecte dans le contexte navigateur courant.
+        Accepte n'importe lequel de ces 4 formats copiés depuis le navigateur d'un utilisateur sur leclercdrive.fr :
+        1. 'copy(document.cookie)' depuis la Console F12 du navigateur (ex: 'datadome=xxx; didomi_token=yyy...')
+           ou même simplement la valeur brute du cookie 'datadome'.
+        2. Une commande 'Copier en tant que cURL' (F12 > Réseau) ou un en-tête 'Cookie: ...'.
+        3. L'export JSON en 1 clic de l'extension navigateur 'Cookie-Editor' ([{'name': ..., 'value': ...}]).
+        4. Un jeton 'LECLERC_HA_V1:...' généré par export_ha_session.py.
         """
         cleaned = (token_str or "").strip()
         if not cleaned:
             return 0
         try:
+            cookies: list[dict] = []
+
             if cleaned.startswith("LECLERC_HA_V1:"):
                 b64_part = cleaned.split("LECLERC_HA_V1:", 1)[1].strip()
                 raw_json = zlib.decompress(base64.urlsafe_b64decode(b64_part)).decode("utf-8")
                 cookies = json.loads(raw_json)
+            elif cleaned.startswith("[") and cleaned.endswith("]"):
+                raw_list = json.loads(cleaned)
+                for c in raw_list:
+                    if isinstance(c, dict) and c.get("name") and c.get("value") is not None:
+                        same_site = str(c.get("sameSite", "Lax")).capitalize()
+                        if same_site not in ("Strict", "Lax", "None"):
+                            same_site = "Lax"
+                        cookies.append({
+                            "name": str(c["name"]),
+                            "value": str(c["value"]),
+                            "domain": str(c.get("domain") or ".leclercdrive.fr"),
+                            "path": str(c.get("path") or "/"),
+                            "httpOnly": bool(c.get("httpOnly", False)),
+                            "secure": bool(c.get("secure", True)),
+                            "sameSite": same_site,
+                        })
             else:
-                cookies = json.loads(cleaned)
+                # Format 'document.cookie', 'Cookie: ...', 'Copy as cURL' ou valeur brute du cookie 'datadome'
+                cookie_line = cleaned
+                curl_match = re.search(r"(?:-b|--cookie|-H\s+['\"]cookie:)\s*['\"]?([^'\"]+)['\"]?", cleaned, re.IGNORECASE)
+                if curl_match:
+                    cookie_line = curl_match.group(1).strip()
+                elif cleaned.lower().startswith("cookie:"):
+                    cookie_line = cleaned.split(":", 1)[1].strip()
+
+                cookie_line = cookie_line.strip("'\"")
+                if "=" not in cookie_line and len(cookie_line) >= 30:
+                    # Valeur brute du cookie datadome copiée depuis F12 > Application > Cookies
+                    cookies.append({
+                        "name": "datadome",
+                        "value": cookie_line,
+                        "domain": ".leclercdrive.fr",
+                        "path": "/",
+                        "secure": True,
+                        "sameSite": "Lax",
+                    })
+                else:
+                    for part in cookie_line.split(";"):
+                        part = part.strip()
+                        if "=" not in part:
+                            continue
+                        k, v = part.split("=", 1)
+                        k, v = k.strip(), v.strip()
+                        if k and v:
+                            cookies.append({
+                                "name": k,
+                                "value": v,
+                                "domain": ".leclercdrive.fr",
+                                "path": "/",
+                                "secure": True,
+                                "sameSite": "Lax",
+                            })
 
             if not isinstance(cookies, list) or not cookies:
                 return 0
@@ -412,10 +467,10 @@ class LeclercDriveWorker:
             if self._context is not None:
                 self._context.clear_cookies()
                 self._context.add_cookies(cookies)
-            _LOGGER.info("E.Leclerc Drive : %d cookies de session importés avec succès.", len(cookies))
+            _LOGGER.info("E.Leclerc Drive : %d cookie(s) de session importé(s) avec succès.", len(cookies))
             return len(cookies)
         except Exception as err:
-            _LOGGER.error("E.Leclerc Drive : Échec du décodage du jeton de session (%s)", err)
+            _LOGGER.error("E.Leclerc Drive : Échec du décodage des cookies/jeton de session (%s)", err)
             return 0
 
     def _dismiss_cookies(self, page) -> None:
