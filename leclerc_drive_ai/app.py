@@ -279,6 +279,18 @@ def run_shopping_flow() -> None:
 
             broadcast_log(f"📋 {len(raw_items)} article(s) trouvé(s) sur la liste.")
             stats = engine.compute_stats(300)
+            if stats.get("orders_count", 0) == 0 and cfg.get("leclerc_email"):
+                broadcast_log("💡 Aucun historique en mémoire : récupération automatique de vos commandes Leclerc passées...")
+                conn_res = engine.login_leclerc(cfg.get("leclerc_email", ""), cfg.get("leclerc_password", ""))
+                if conn_res.get("status") == "connected":
+                    engine.scrape_order_history(15)
+                    stats = engine.compute_stats(300)
+                    broadcast_log(f"✅ Historique initialisé avec succès ({stats.get('orders_count', 0)} commandes analysées).")
+                elif conn_res.get("status") == "otp_required":
+                    broadcast_log("📩 Code de sécurité à 6 chiffres envoyé par e-mail par E.Leclerc.")
+                else:
+                    broadcast_log(f"ℹ️ Récupération préalable reportée ({conn_res.get('message', 'Non connecté')}). Poursuite des courses.")
+
             season_ctx = engine.get_french_season_context()
             products = stats.get("products", [])
 
@@ -383,6 +395,22 @@ async def serve_ui(request: Request):
     rep_file = DATA_DIR / "last_report.json"
     last_report = json.loads(rep_file.read_text(encoding="utf-8")) if rep_file.exists() else {}
     settings = load_settings()
+    orders_cnt = stats.get('orders_count', 0)
+    first_run_banner = ""
+    if orders_cnt == 0:
+        first_run_banner = """
+    <div class="bg-gradient-to-r from-amber-950/70 via-slate-900 to-slate-900 border border-amber-600/50 rounded-2xl p-4 my-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-xl">
+        <div class="flex items-center gap-3">
+            <span class="text-3xl">💡</span>
+            <div>
+                <h4 class="font-bold text-amber-300 text-sm">Première utilisation : Aucun historique de courses détecté</h4>
+                <p class="text-xs text-slate-300 mt-0.5">Pour apprendre vos marques favorites, quantités habituelles et rotation de viandes, lancez la récupération de vos commandes.</p>
+            </div>
+        </div>
+        <button onclick="triggerSync()" class="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs py-2.5 px-4 rounded-xl transition flex items-center gap-2 whitespace-nowrap shadow">
+            🔄 Récupérer mon historique Leclerc
+        </button>
+    </div>"""
 
     html = f"""<!DOCTYPE html>
 <html lang="fr" class="dark">
@@ -403,7 +431,7 @@ async def serve_ui(request: Request):
             <h1 class="text-2xl md:text-3xl font-extrabold text-blue-400 flex items-center gap-2">
                 🛒 E.Leclerc Drive AI
                 <span class="badge bg-blue-900 text-blue-200 text-xs">Add-on Ingress</span>
-                <span class="badge bg-emerald-900/80 text-emerald-300 text-xs border border-emerald-700/50">v1.2.0</span>
+                <span class="badge bg-emerald-900/80 text-emerald-300 text-xs border border-emerald-700/50">v1.3.0</span>
             </h1>
             <p class="text-sm text-slate-400 mt-1">Assistant intelligent avec rotation des viandes, saisonnalité & anti-bridage</p>
         </div>
@@ -440,6 +468,8 @@ async def serve_ui(request: Request):
             <span class="text-xs text-slate-400">Filtre anti-hors-saison actif</span>
         </div>
     </div>
+
+    {first_run_banner}
 
     <!-- Navigation Tabs -->
     <div class="flex border-b border-slate-800 mb-6 gap-2">
@@ -539,11 +569,21 @@ async def serve_ui(request: Request):
             </div>
 
             <!-- Cookie / cURL Session Injection -->
-            <div class="bg-slate-900/80 p-5 rounded-2xl border border-slate-800">
-                <h4 class="font-bold text-slate-200 mb-2">🍪 Déblocage Anti-Captcha (Session / cURL)</h4>
-                <p class="text-xs text-slate-400 mb-3">Si un Captcha bloque, collez votre session (cURL, document.cookie ou jeton) :</p>
-                <textarea id="sessionTokenInput" rows="2" placeholder="Collez ici votre session..." class="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-xs text-slate-200 font-mono"></textarea>
-                <button onclick="importSessionToken()" class="mt-2 bg-blue-600 hover:bg-blue-500 text-white font-bold px-4 py-2 rounded-xl text-xs transition">Importer la session</button>
+            <div class="bg-slate-900/80 p-5 rounded-2xl border border-slate-800 space-y-3">
+                <h4 class="font-bold text-slate-200">🍪 Déblocage Anti-Captcha (Session / cURL)</h4>
+                <div class="p-2.5 bg-slate-950/80 rounded-xl border border-amber-900/40 text-xs text-slate-300 space-y-1.5">
+                    <div class="font-bold text-amber-300 flex items-center gap-1.5">
+                        <span>⭐</span> Favori magique 1-clic :
+                    </div>
+                    <p class="text-slate-400 text-[11px] leading-relaxed">
+                        Glissez ce bouton dans vos favoris : 
+                        <a href="javascript:(function(){{navigator.clipboard.writeText(document.cookie).then(()=>alert('Session E.Leclerc copiée dans le presse-papier ! Collez-la dans Home Assistant.'));}})();" class="inline-block bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-2 py-0.5 rounded text-[11px] shadow">
+                            ⭐ Copier Session Leclerc
+                        </a>. Sur <a href="https://www.leclercdrive.fr" target="_blank" class="text-blue-400 underline">leclercdrive.fr</a> connecté, cliquez dessus puis collez ci-dessous :
+                    </p>
+                </div>
+                <textarea id="sessionTokenInput" rows="2" placeholder="Collez ici votre session (document.cookie ou cURL)..." class="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-xs text-slate-200 font-mono"></textarea>
+                <button onclick="importSessionToken()" class="bg-blue-600 hover:bg-blue-500 text-white font-bold px-4 py-2 rounded-xl text-xs transition">Importer la session</button>
             </div>
         </div>
     </div>
@@ -832,6 +872,61 @@ async def serve_ui(request: Request):
             }}).then(r => r.json()).then(d => alert(d.message));
         }}
 
+        function showOtpModal() {{
+            document.getElementById('otpModal').classList.remove('hidden');
+            const inp = document.getElementById('modalOtpInput');
+            inp.value = '';
+            inp.focus();
+            document.getElementById('modalOtpStatus').innerText = '';
+        }}
+
+        function closeOtpModal() {{
+            document.getElementById('otpModal').classList.add('hidden');
+        }}
+
+        function submitModalOtp() {{
+            const code = document.getElementById('modalOtpInput').value.trim();
+            const statusDiv = document.getElementById('modalOtpStatus');
+            const btn = document.getElementById('btnSubmitModalOtp');
+            if (code.length !== 6) {{
+                statusDiv.className = 'text-xs text-rose-400 font-semibold';
+                statusDiv.innerText = 'Le code doit comporter 6 chiffres.';
+                return;
+            }}
+            btn.disabled = true;
+            btn.innerText = '⏳ Validation...';
+            statusDiv.className = 'text-xs text-amber-300 font-semibold';
+            statusDiv.innerText = 'Validation du code...';
+
+            fetch(rootPath + '/api/otp', {{
+                method: 'POST',
+                headers: {{ 'Content-Type': 'application/json' }},
+                body: JSON.stringify({{ code: code }})
+            }})
+            .then(r => r.json())
+            .then(d => {{
+                if (d.status === 'connected') {{
+                    statusDiv.className = 'text-xs text-emerald-400 font-bold';
+                    statusDiv.innerText = '✅ Code validé ! Récupération de vos commandes en cours...';
+                    setTimeout(() => {{
+                        closeOtpModal();
+                        switchTab('logs');
+                    }}, 1200);
+                }} else {{
+                    statusDiv.className = 'text-xs text-rose-400 font-semibold';
+                    statusDiv.innerText = '❌ ' + (d.message || 'Code refusé.');
+                }}
+            }})
+            .catch(err => {{
+                statusDiv.className = 'text-xs text-rose-400 font-semibold';
+                statusDiv.innerText = '❌ Erreur : ' + err;
+            }})
+            .finally(() => {{
+                btn.disabled = false;
+                btn.innerText = 'Confirmer le code';
+            }});
+        }}
+
         // Live Log SSE
         const evtSource = new EventSource(rootPath + '/api/logs');
         evtSource.onmessage = function(e) {{
@@ -840,8 +935,45 @@ async def serve_ui(request: Request):
             div.innerText = e.data;
             box.appendChild(div);
             box.scrollTop = box.scrollHeight;
+
+            if (e.data.includes("Code de sécurité à 6 chiffres")) {{
+                showOtpModal();
+            }}
+            if (e.data.includes("Aspiration terminée") || e.data.includes("Historique mis à jour")) {{
+                setTimeout(() => {{ window.location.reload(); }}, 2500);
+            }}
         }};
     </script>
+
+    <!-- Modal OTP interactif -->
+    <div id="otpModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+        <div class="bg-slate-900 border border-blue-500/50 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
+            <div class="flex items-center gap-3">
+                <div class="w-10 h-10 rounded-xl bg-blue-950 border border-blue-700/50 flex items-center justify-center text-xl">
+                    📩
+                </div>
+                <div>
+                    <h3 class="font-bold text-slate-100 text-base">Code de sécurité E.Leclerc</h3>
+                    <p class="text-xs text-slate-400">Vérification de nouvel appareil</p>
+                </div>
+            </div>
+            <p class="text-xs text-slate-300 leading-relaxed">
+                E.Leclerc vient d'envoyer un <b>code à 6 chiffres</b> sur votre adresse e-mail pour autoriser Home Assistant. Entrez-le ci-dessous :
+            </p>
+            <div class="flex justify-center my-2">
+                <input type="text" id="modalOtpInput" maxlength="6" placeholder="000000" class="bg-slate-950 border-2 border-blue-500/70 rounded-xl px-4 py-3 text-center text-2xl font-mono tracking-widest text-white w-48 focus:outline-none focus:border-blue-400">
+            </div>
+            <div id="modalOtpStatus" class="text-xs text-center min-h-[1rem]"></div>
+            <div class="flex gap-3 pt-2">
+                <button type="button" onclick="closeOtpModal()" class="w-1/2 py-2.5 px-4 rounded-xl border border-slate-700 text-slate-300 hover:bg-slate-800 text-xs font-semibold transition">
+                    Annuler
+                </button>
+                <button type="button" onclick="submitModalOtp()" id="btnSubmitModalOtp" class="w-1/2 py-2.5 px-4 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition shadow-lg shadow-blue-900/30">
+                    Confirmer le code
+                </button>
+            </div>
+        </div>
+    </div>
 </body>
 </html>"""
     return HTMLResponse(content=html)
@@ -929,6 +1061,21 @@ async def api_export_history():
 async def api_submit_otp(payload: dict):
     code = payload.get("code", "")
     res = engine.submit_otp(code)
+    if res.get("status") == "connected":
+        def _scrape_after_otp():
+            global IS_RUNNING
+            with RUN_LOCK:
+                IS_RUNNING = True
+                try:
+                    broadcast_log("🔄 Connexion confirmée ! Aspiration de vos commandes en cours...")
+                    scrape_res = engine.scrape_order_history(15)
+                    broadcast_log(f"🎉 Aspiration terminée : {scrape_res.get('saved_orders', 0)} commande(s) enregistrée(s) ({scrape_res.get('total_orders', 0)} au total).")
+                except Exception as e:
+                    broadcast_log(f"⚠️ Erreur lors de l'aspiration : {e}")
+                finally:
+                    IS_RUNNING = False
+
+        threading.Thread(target=_scrape_after_otp, daemon=True).start()
     return res
 
 

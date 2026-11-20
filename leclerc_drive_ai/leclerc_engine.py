@@ -875,6 +875,12 @@ class LeclercEngine:
 
         state = self.get_cart_and_auth_state(page)
         if state["connected"]:
+            # Auto-détection du magasin dans l'URL si non renseigné
+            curr_url = page.url
+            slug_m = re.search(r"/(magasin-\d+-[^/]+)/", curr_url)
+            if slug_m and not self.magasin_slug:
+                self.magasin_slug = slug_m.group(1)
+                self.log(f"📍 Magasin E.Leclerc auto-détecté : {self.magasin_slug}")
             self.log(f"✅ Session E.Leclerc connectée ({state['user_name']}) | Panier : {state['cart_count']} art. ({state['cart_total']})")
             self.close()
             return {"status": "connected", "user_name": state["user_name"], "cart_total": state["cart_total"], "cart_count": state["cart_count"]}
@@ -984,6 +990,10 @@ class LeclercEngine:
             page.wait_for_timeout(2500)
             self._dismiss_cookies(page)
 
+            if self._is_datadome_or_captcha(page):
+                self.log("⚠️ Protection anti-bot DataDome CAPTCHA détectée sur la page des commandes.")
+                return {"status": "captcha_blocked", "message": "Protection DataDome détectée. Utilisez le favori anti-captcha."}
+
             detail_hrefs = page.evaluate("""
                 () => {
                     const links = Array.from(document.querySelectorAll('a[href*="detail-commande.aspx"]'));
@@ -999,6 +1009,9 @@ class LeclercEngine:
                     return res;
                 }
             """)
+
+            if not detail_hrefs:
+                self.log("ℹ️ Aucune commande trouvée sur le compte E.Leclerc Drive (ou page inaccessible).")
 
             history = self.load_history()
             orders_by_id = {o["order_id"]: o for o in history.get("orders", [])}
