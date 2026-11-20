@@ -15,7 +15,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-freefont-ttf \
     curl \
     jq \
+    zstd \
+    procps \
+    pciutils \
     && rm -rf /var/lib/apt/lists/*
+
+# Installation officielle d'Ollama (détection auto amd64/arm64)
+RUN curl -fsSL https://ollama.com/install.sh | sh
 
 WORKDIR /app
 

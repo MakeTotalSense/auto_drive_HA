@@ -240,8 +240,8 @@ def call_ai_planner(items_to_translate: list[str], all_items: list[str], stats: 
         except Exception as e:
             broadcast_log(f"⚠️ Erreur entité conversation HA ({e}), repli Ollama")
 
-    # Ollama par défaut
-    ollama_url = cfg.get("ollama_url", "http://homeassistant.local:11434").rstrip("/")
+    # Ollama par défaut (intégré dans l'add-on)
+    ollama_url = cfg.get("ollama_url", "http://127.0.0.1:11434").rstrip("/")
     model = cfg.get("ollama_model", "qwen2.5:1.5b")
     try:
         broadcast_log(f"🤖 Consultation Ollama ({model})...")
@@ -431,7 +431,7 @@ async def serve_ui(request: Request):
             <h1 class="text-2xl md:text-3xl font-extrabold text-blue-400 flex items-center gap-2">
                 🛒 E.Leclerc Drive AI
                 <span class="badge bg-blue-900 text-blue-200 text-xs">Add-on Ingress</span>
-                <span class="badge bg-emerald-900/80 text-emerald-300 text-xs border border-emerald-700/50">v1.3.0</span>
+                <span class="badge bg-emerald-900/80 text-emerald-300 text-xs border border-emerald-700/50">v1.4.0</span>
             </h1>
             <p class="text-sm text-slate-400 mt-1">Assistant intelligent avec rotation des viandes, saisonnalité & anti-bridage</p>
         </div>
@@ -697,13 +697,20 @@ async def serve_ui(request: Request):
                     <input type="text" name="conversation_entity" value="{settings.get('conversation_entity', '')}" placeholder="conversation.home_assistant" class="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm text-white font-mono">
                 </div>
                 <div>
-                    <label class="block text-xs font-semibold text-slate-400 mb-1">URL Ollama</label>
-                    <input type="text" name="ollama_url" value="{settings.get('ollama_url', 'http://homeassistant.local:11434')}" class="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm text-white">
+                    <label class="block text-xs font-semibold text-slate-400 mb-1">URL Ollama (Par défaut : http://127.0.0.1:11434 pour l'Ollama intégré)</label>
+                    <input type="text" id="ollamaUrlInput" name="ollama_url" value="{settings.get('ollama_url', 'http://127.0.0.1:11434')}" class="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm text-white font-mono">
                 </div>
                 <div>
                     <label class="block text-xs font-semibold text-slate-400 mb-1">Modèle Ollama</label>
-                    <input type="text" name="ollama_model" value="{settings.get('ollama_model', 'qwen2.5:1.5b')}" class="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm text-white">
+                    <input type="text" id="ollamaModelInput" name="ollama_model" value="{settings.get('ollama_model', 'qwen2.5:1.5b')}" class="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm text-white font-mono">
                 </div>
+            </div>
+            <div class="flex items-center gap-3 pt-2">
+                <button type="button" onclick="testOllamaConnection()" id="btnTestOllama" class="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs py-2 px-3.5 rounded-xl transition flex items-center gap-1.5">
+                    🔍 Tester Ollama & Modèle
+                </button>
+                <span id="ollamaTestStatus" class="text-xs"></span>
+            </div>
             </div>
             <div class="pt-2">
                 <button type="submit" class="bg-blue-600 hover:bg-blue-500 text-white font-bold px-6 py-2.5 rounded-xl transition">💾 Enregistrer les paramètres</button>
@@ -773,6 +780,43 @@ async def serve_ui(request: Request):
             .finally(() => {{
                 btn.disabled = false;
                 btn.innerText = '🔍 Tester la connexion Google Keep';
+            }});
+        }}
+
+        function testOllamaConnection() {{
+            const btn = document.getElementById('btnTestOllama');
+            const statusSpan = document.getElementById('ollamaTestStatus');
+            btn.disabled = true;
+            btn.innerText = '⏳ Vérification...';
+            statusSpan.innerText = '';
+            const url = document.getElementById('ollamaUrlInput').value;
+            const model = document.getElementById('ollamaModelInput').value;
+
+            fetch(rootPath + '/api/test_ollama', {{
+                method: 'POST',
+                headers: {{ 'Content-Type': 'application/json' }},
+                body: JSON.stringify({{ ollama_url: url, ollama_model: model }})
+            }})
+            .then(r => r.json())
+            .then(d => {{
+                if (d.status === 'ok') {{
+                    statusSpan.className = 'text-xs text-emerald-400 font-bold';
+                    statusSpan.innerText = '✅ ' + d.message;
+                }} else if (d.status === 'pulling') {{
+                    statusSpan.className = 'text-xs text-amber-300 font-semibold';
+                    statusSpan.innerText = '⏳ ' + d.message;
+                }} else {{
+                    statusSpan.className = 'text-xs text-rose-400 font-semibold';
+                    statusSpan.innerText = '❌ ' + d.message;
+                }}
+            }})
+            .catch(err => {{
+                statusSpan.className = 'text-xs text-rose-400 font-semibold';
+                statusSpan.innerText = '❌ Erreur réseau : ' + err;
+            }})
+            .finally(() => {{
+                btn.disabled = false;
+                btn.innerText = '🔍 Tester Ollama & Modèle';
             }});
         }}
 
@@ -1120,6 +1164,33 @@ async def api_test_keep(payload: dict):
         }
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
+@app.post("/api/test_ollama")
+async def api_test_ollama(payload: dict):
+    url = str(payload.get("ollama_url") or "http://127.0.0.1:11434").rstrip("/")
+    model = str(payload.get("ollama_model") or "qwen2.5:1.5b").strip()
+    try:
+        r = requests.get(f"{url}/api/tags", timeout=6)
+        if r.status_code == 200:
+            models = [m.get("name", "") for m in r.json().get("models", [])]
+            has_model = any(model in m for m in models)
+            if has_model:
+                return {"status": "ok", "message": f"Ollama connecté ! Modèle '{model}' installé et disponible."}
+            else:
+                def _pull():
+                    try:
+                        broadcast_log(f"📥 Démarrage du téléchargement du modèle '{model}' dans Ollama...")
+                        requests.post(f"{url}/api/pull", json={"name": model, "stream": False}, timeout=900)
+                        broadcast_log(f"✅ Modèle Ollama '{model}' téléchargé avec succès et prêt !")
+                    except Exception as ex:
+                        broadcast_log(f"⚠️ Échec du téléchargement Ollama : {ex}")
+
+                threading.Thread(target=_pull, daemon=True).start()
+                return {"status": "pulling", "message": f"Ollama connecté. Modèle '{model}' absent : téléchargement en tâche de fond démarré !"}
+        return {"status": "error", "message": f"Ollama a répondu avec le statut HTTP {r.status_code}."}
+    except Exception as e:
+        return {"status": "error", "message": f"Ollama injoignable sur {url} ({e})."}
 
 
 @app.get("/api/screenshot")

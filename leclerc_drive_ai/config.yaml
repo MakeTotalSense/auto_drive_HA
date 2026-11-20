@@ -1,6 +1,6 @@
 name: "E.Leclerc Drive AI"
-description: "Assistant courses E.Leclerc Drive intelligent avec rotation des viandes, saisonnalité en France, rappels et IA"
-version: "1.3.0"
+description: "Assistant courses E.Leclerc Drive intelligent avec rotation des viandes, saisonnalité en France, rappels et IA Ollama intégrée"
+version: "1.4.0"
 slug: "leclerc_drive_ai"
 init: false
 arch:
@@ -24,7 +24,7 @@ options:
   todo_entity_id: "todo.shopping_list"
   ai_provider: "ollama"
   conversation_entity: ""
-  ollama_url: "http://homeassistant.local:11434"
+  ollama_url: "http://127.0.0.1:11434"
   ollama_model: "qwen2.5:1.5b"
   plural_items_count: 3
 schema:

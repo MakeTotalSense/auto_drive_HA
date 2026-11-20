@@ -1,8 +1,15 @@
-# 🛒 E.Leclerc Drive AI — Add-on Home Assistant (avec Ingress)
+# 🛒 E.Leclerc Drive AI — Add-on Home Assistant (avec Ingress & Ollama intégré)
 
-Module complémentaire (Add-on) officiel pour **Home Assistant** (compatible **Raspberry Pi 4 / 5 (64-bit)**, Home Assistant Yellow/Green, PC x86_64, VM Proxmox/Unraid).
+Module complémentaire (Add-on) officiel pour **Home Assistant** (compatible **Raspberry Pi 5 (8GB)**, PC x86_64, VM Proxmox/Unraid).
 
-L'Add-on tourne dans son propre conteneur Docker **isolé de Home Assistant Core**, avec son propre Chromium, Node.js et Python pré-installés. Il s'affiche directement **dans la barre latérale de Home Assistant (Ingress)** et met à jour automatiquement vos capteurs et notifications HA.
+> [!IMPORTANT]
+> ### ⚠️ Configuration matérielle minimale requise
+> Cet add-on intègre désormais son propre **serveur Ollama local** et télécharge automatiquement le modèle de langage **`qwen2.5:1.5b`** (~1 Go) pour l'audit et l'intelligence de vos courses.
+> - **Matériel minimum requis avec Ollama intégré** : **Raspberry Pi 5 avec 8 Go de RAM minimum**, ou un Mini-PC / NUC x86 (Intel N100 / i3 / i5) ou une Machine Virtuelle avec **8 Go de RAM allouée**.
+> - **Pourquoi ?** L'exécution conjointe du navigateur Chromium (Playwright), du serveur web, de l'aspiration des commandes et de l'inférence locale d'un modèle d'IA de 1,5 milliard de paramètres nécessite une réserve de mémoire vive suffisante pour éviter tout crash mémoire (*OOM Kill*).
+> - *(Note : Sur un Raspberry Pi 4 ou une box avec moins de 8 Go de RAM, vous pouvez désactiver Ollama dans la configuration et utiliser le moteur algorithmique Python 100% autonome ou l'agent conversationnel natif de Home Assistant).*
+
+L'Add-on tourne dans son propre conteneur Docker **isolé de Home Assistant Core**, avec son propre Chromium, Node.js, Python et démon Ollama pré-installés. Il s'affiche directement **dans la barre latérale de Home Assistant (Ingress)** et met à jour automatiquement vos capteurs et notifications HA.
 
 ---
 
