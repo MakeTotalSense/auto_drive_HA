@@ -431,7 +431,7 @@ async def serve_ui(request: Request):
             <h1 class="text-2xl md:text-3xl font-extrabold text-blue-400 flex items-center gap-2">
                 🛒 E.Leclerc Drive AI
                 <span class="badge bg-blue-900 text-blue-200 text-xs">Add-on Ingress</span>
-                <span class="badge bg-emerald-900/80 text-emerald-300 text-xs border border-emerald-700/50">v1.4.1</span>
+                <span class="badge bg-emerald-900/80 text-emerald-300 text-xs border border-emerald-700/50">v1.4.2</span>
             </h1>
             <p class="text-sm text-slate-400 mt-1">Assistant intelligent avec rotation des viandes, saisonnalité & anti-bridage</p>
         </div>
@@ -541,9 +541,16 @@ async def serve_ui(request: Request):
     </div>
 
     <!-- TAB 2: Live Logs -->
-    <div id="content-logs" class="hidden">
-        <div class="bg-slate-950 p-4 rounded-2xl border border-slate-800 font-mono text-xs text-slate-300 h-96 overflow-y-auto shadow-inner space-y-1" id="logBox">
-            {''.join([f'<div>{line}</div>' for line in LOG_BUFFER]) or '<div>En attente d\'activité...</div>'}
+    <div id="content-logs" class="hidden space-y-3">
+        <div class="flex items-center justify-between">
+            <span class="text-xs text-slate-400 flex items-center gap-2">
+                <span class="inline-block w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                Journal en direct des actions du robot
+            </span>
+            <button type="button" onclick="document.getElementById('logBox').innerHTML=''" class="text-xs text-slate-400 hover:text-slate-200 border border-slate-800 bg-slate-900 px-2.5 py-1 rounded-lg transition">Effacer l'affichage</button>
+        </div>
+        <div class="bg-slate-950 p-4 rounded-2xl border border-slate-800 font-mono text-xs text-slate-300 h-[460px] overflow-y-auto shadow-inner space-y-1.5" id="logBox">
+            {''.join([f'<div>{line}</div>' for line in LOG_BUFFER]) or '<div class="text-slate-500 italic">En attente d\'activité...</div>'}
         </div>
     </div>
 
@@ -862,14 +869,39 @@ async def serve_ui(request: Request):
             reader.readAsText(file);
         }}
 
+        function showToast(message, type = 'info') {{
+            const container = document.getElementById('toastContainer');
+            if (!container) return;
+            const toast = document.createElement('div');
+            const bg = type === 'error' ? 'bg-rose-950/95 border-rose-600 text-rose-200' :
+                       type === 'success' ? 'bg-emerald-950/95 border-emerald-600 text-emerald-200' :
+                       'bg-slate-900/95 border-blue-500 text-blue-200';
+            toast.className = `p-3 rounded-xl border shadow-2xl text-xs font-semibold flex items-center gap-2 pointer-events-auto transition-all duration-300 transform translate-y-3 opacity-0 ${{bg}}`;
+            toast.innerHTML = `<span>${{type === 'error' ? '❌' : (type === 'success' ? '✅' : 'ℹ️')}}</span> <span>${{message}}</span>`;
+            container.appendChild(toast);
+            setTimeout(() => {{ toast.classList.remove('translate-y-3', 'opacity-0'); }}, 20);
+            setTimeout(() => {{
+                toast.classList.add('opacity-0', 'translate-y-3');
+                setTimeout(() => toast.remove(), 350);
+            }}, 4500);
+        }}
+
         function triggerRun() {{
             const btn = document.getElementById('btnRun');
             btn.disabled = true;
             btn.innerText = '⏳ En cours...';
             switchTab('logs');
+            showToast('🚀 Courses démarrées en arrière-plan...', 'info');
             fetch(rootPath + '/api/run', {{ method: 'POST' }})
                 .then(r => r.json())
-                .then(d => alert(d.message || 'Courses lancées !'))
+                .then(d => {{
+                    if (d.status === 'started') {{
+                        showToast(d.message || 'Courses démarrées en arrière-plan !', 'success');
+                    }} else {{
+                        showToast(d.message || 'Impossible de lancer.', 'error');
+                    }}
+                }})
+                .catch(err => showToast('Erreur réseau : ' + err, 'error'))
                 .finally(() => {{ btn.disabled = false; btn.innerText = '⚡ Lancer les courses'; }});
         }}
 
@@ -878,9 +910,17 @@ async def serve_ui(request: Request):
             btn.disabled = true;
             btn.innerText = '⏳ Synchronisation...';
             switchTab('logs');
+            showToast('🔄 Synchronisation démarrée en arrière-plan...', 'info');
             fetch(rootPath + '/api/sync_history', {{ method: 'POST' }})
                 .then(r => r.json())
-                .then(d => alert(d.message || 'Historique synchronisé !'))
+                .then(d => {{
+                    if (d.status === 'started') {{
+                        showToast(d.message || 'Synchronisation en cours...', 'success');
+                    }} else {{
+                        showToast(d.message || 'Impossible de synchroniser.', 'error');
+                    }}
+                }})
+                .catch(err => showToast('Erreur réseau : ' + err, 'error'))
                 .finally(() => {{ btn.disabled = false; btn.innerText = '🔄 Sync Historique'; }});
         }}
 
@@ -890,7 +930,10 @@ async def serve_ui(request: Request):
                 method: 'POST',
                 headers: {{ 'Content-Type': 'application/json' }},
                 body: JSON.stringify({{ code }})
-            }}).then(r => r.json()).then(d => alert(d.message));
+            }})
+            .then(r => r.json())
+            .then(d => showToast(d.message, d.status === 'connected' ? 'success' : 'error'))
+            .catch(err => showToast('Erreur : ' + err, 'error'));
         }}
 
         function importSessionToken() {{
@@ -899,7 +942,10 @@ async def serve_ui(request: Request):
                 method: 'POST',
                 headers: {{ 'Content-Type': 'application/json' }},
                 body: JSON.stringify({{ token }})
-            }}).then(r => r.json()).then(d => alert(d.message));
+            }})
+            .then(r => r.json())
+            .then(d => showToast(d.message, d.status === 'ok' ? 'success' : 'error'))
+            .catch(err => showToast('Erreur : ' + err, 'error'));
         }}
 
         function refreshScreenshot() {{
@@ -913,7 +959,10 @@ async def serve_ui(request: Request):
                 method: 'POST',
                 headers: {{ 'Content-Type': 'application/json' }},
                 body: JSON.stringify(data)
-            }}).then(r => r.json()).then(d => alert(d.message));
+            }})
+            .then(r => r.json())
+            .then(d => showToast(d.message || 'Paramètres enregistrés !', 'success'))
+            .catch(err => showToast('Erreur : ' + err, 'error'));
         }}
 
         function showOtpModal() {{
@@ -971,22 +1020,46 @@ async def serve_ui(request: Request):
             }});
         }}
 
-        // Live Log SSE
-        const evtSource = new EventSource(rootPath + '/api/logs');
-        evtSource.onmessage = function(e) {{
+        // Live Log SSE + Fallback Polling
+        const seenLogs = new Set();
+        function appendLogLine(line) {{
+            if (!line) return;
+            const clean = line.trim();
+            if (seenLogs.has(clean)) return;
+            seenLogs.add(clean);
             const box = document.getElementById('logBox');
+            if (!box) return;
             const div = document.createElement('div');
-            div.innerText = e.data;
+            div.innerText = clean;
             box.appendChild(div);
             box.scrollTop = box.scrollHeight;
 
-            if (e.data.includes("Code de sécurité à 6 chiffres")) {{
+            if (clean.includes("Code de sécurité à 6 chiffres")) {{
                 showOtpModal();
             }}
-            if (e.data.includes("Aspiration terminée") || e.data.includes("Historique mis à jour")) {{
+            if (clean.includes("Aspiration terminée") || clean.includes("Historique mis à jour")) {{
                 setTimeout(() => {{ window.location.reload(); }}, 2500);
             }}
-        }};
+        }}
+
+        try {{
+            const evtSource = new EventSource(rootPath + '/api/logs');
+            evtSource.onmessage = function(e) {{
+                appendLogLine(e.data);
+            }};
+        }} catch (err) {{}}
+
+        // Polling de secours toutes les 2.5 secondes
+        setInterval(() => {{
+            fetch(rootPath + '/api/logs/recent')
+                .then(r => r.json())
+                .then(d => {{
+                    if (d.logs && Array.isArray(d.logs)) {{
+                        d.logs.forEach(appendLogLine);
+                    }}
+                }})
+                .catch(() => {{}});
+        }}, 2500);
     </script>
 
     <!-- Modal OTP interactif -->
@@ -1018,6 +1091,9 @@ async def serve_ui(request: Request):
             </div>
         </div>
     </div>
+
+    <!-- Toast Notifications Container -->
+    <div id="toastContainer" class="fixed bottom-5 right-5 z-50 flex flex-col gap-2 max-w-sm pointer-events-none"></div>
 </body>
 </html>"""
     return HTMLResponse(content=html)
@@ -1207,6 +1283,9 @@ async def stream_logs():
 
     async def event_generator():
         try:
+            # Rejouer les lignes existantes pour le nouveau client
+            for line in list(LOG_BUFFER):
+                yield f"data: {line}\n\n"
             while True:
                 line = await q.get()
                 yield f"data: {line}\n\n"
@@ -1216,7 +1295,20 @@ async def stream_logs():
             if q in LOG_SUBSCRIBERS:
                 LOG_SUBSCRIBERS.remove(q)
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
+
+
+@app.get("/api/logs/recent")
+async def get_recent_logs():
+    return {"logs": list(LOG_BUFFER), "is_running": IS_RUNNING}
 
 
 if __name__ == "__main__":

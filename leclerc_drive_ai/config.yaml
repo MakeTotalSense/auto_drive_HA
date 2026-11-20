@@ -1,6 +1,6 @@
 name: "E.Leclerc Drive AI"
 description: "Assistant courses E.Leclerc Drive intelligent avec rotation des viandes, saisonnalité en France, rappels et IA Ollama intégrée"
-version: "1.4.1"
+version: "1.4.2"
 slug: "leclerc_drive_ai"
 init: false
 arch:
