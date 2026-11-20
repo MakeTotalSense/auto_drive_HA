@@ -177,24 +177,58 @@ def find_chrome_executable() -> str | None:
     return None
 
 
+def extract_google_token_from_string(raw: str) -> str:
+    cleaned = (raw or "").strip()
+    import urllib.parse
+    decoded = urllib.parse.unquote(cleaned)
+
+    m_master = re.search(r"(aas_et/[a-zA-Z0-9_\-\.]+)", decoded)
+    if m_master:
+        return m_master.group(1)
+
+    m_rt = re.search(r"(oauth2rt_1/[a-zA-Z0-9_\-\.]+)", decoded)
+    if m_rt:
+        return m_rt.group(1)
+
+    m_oauth2 = re.search(r"(oauth2_4/[a-zA-Z0-9_\-\.]+)", decoded)
+    if m_oauth2:
+        return m_oauth2.group(1)
+
+    m_kv = re.search(r"oauth_token=([a-zA-Z0-9_\-\./]+)", decoded)
+    if m_kv:
+        return m_kv.group(1)
+
+    return decoded
+
+
 def resolve_google_keep_master_token(google_email: str, secret_or_token: str) -> str:
-    cleaned = secret_or_token.strip()
-    if cleaned.startswith("aas_et/"):
-        return cleaned
+    token = extract_google_token_from_string(secret_or_token)
+
+    if token.startswith(("aas_et/", "oauth2rt_1/")):
+        return token
 
     import gpsoauth
     android_id = "0123456789abcdef"
-    if cleaned.startswith("oauth2_4/"):
-        res = gpsoauth.exchange_token(google_email.strip(), cleaned, android_id)
+
+    if token.startswith("oauth2_4/"):
+        res = gpsoauth.exchange_token(google_email.strip(), token, android_id)
         if "Token" in res:
             return res["Token"]
-        raise ValueError(f"Échec de l'échange du token OAuth : {res}")
+        err_msg = res.get("Error", res)
+        raise ValueError(f"Échec de l'échange du token Google EmbeddedSetup ({err_msg}). Vérifiez votre adresse Gmail.")
 
-    app_pwd = cleaned.replace(" ", "")
-    res = gpsoauth.perform_master_login(google_email.strip(), app_pwd, android_id)
-    if "Token" in res:
-        return res["Token"]
-    raise ValueError(f"Refus Google mot de passe d'application ({res.get('Error', res)}).")
+    app_pwd = token.replace(" ", "")
+    if len(app_pwd) == 16 and app_pwd.isalpha():
+        res = gpsoauth.perform_master_login(google_email.strip(), app_pwd, android_id)
+        if "Token" in res:
+            return res["Token"]
+        raise ValueError(
+            "Google a refusé le mot de passe d'application (BadAuthentication). "
+            "Google bloque désormais les mots de passe d'application sur cette API. "
+            "Récupérez votre jeton 'oauth2_4/...' via https://accounts.google.com/EmbeddedSetup."
+        )
+
+    raise ValueError("Format de token non reconnu. Le jeton Google Keep doit commencer par 'oauth2_4/' ou 'aas_et/'.")
 
 
 def fetch_google_keep_items(google_email: str, master_token: str, note_title: str = "Liste de courses") -> list[str]:

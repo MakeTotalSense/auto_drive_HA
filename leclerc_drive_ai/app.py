@@ -179,11 +179,15 @@ def fetch_shopping_items(cfg: dict) -> list[str]:
         app_pwd = cfg.get("google_app_password", "").strip()
         title = cfg.get("keep_note_title", "Liste de courses")
 
-        if not master_tok and app_pwd:
+        # Si le master_token n'est pas encore en cache ou si un nouveau token/jeton a été saisi
+        if not master_tok or (app_pwd and not app_pwd.startswith(("aas_et/", "oauth2rt_1/")) and app_pwd != master_tok):
             try:
-                master_tok = resolve_google_keep_master_token(g_email, app_pwd)
+                candidate = app_pwd or master_tok
+                master_tok = resolve_google_keep_master_token(g_email, candidate)
                 cfg["google_master_token"] = master_tok
-                save_settings({"google_master_token": master_tok})
+                cfg["google_app_password"] = master_tok
+                save_settings({"google_master_token": master_tok, "google_app_password": master_tok})
+                broadcast_log("🔑 Jeton Google Keep validé et enregistré.")
             except Exception as e:
                 broadcast_log(f"⚠️ Erreur échange token Google Keep : {e}")
 
@@ -562,19 +566,58 @@ async def serve_ui(request: Request):
                 </div>
                 <div>
                     <label class="block text-xs font-semibold text-slate-400 mb-1">Source de la liste de courses</label>
-                    <select name="list_source" class="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm text-white">
+                    <select name="list_source" id="listSourceSelect" onchange="toggleListFields()" class="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm text-white">
                         <option value="google_keep" {"selected" if settings.get("list_source") == "google_keep" else ""}>Google Keep</option>
                         <option value="ha_todo" {"selected" if settings.get("list_source") == "ha_todo" else ""}>Home Assistant Todo (todo.*)</option>
                     </select>
                 </div>
-                <div>
-                    <label class="block text-xs font-semibold text-slate-400 mb-1">E-mail Gmail (si Google Keep)</label>
-                    <input type="email" name="google_email" value="{settings.get('google_email', '')}" class="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm text-white">
+            </div>
+
+            <!-- Google Keep Guide & Config -->
+            <div id="googleKeepBlock" class="p-4 bg-slate-950/70 border border-blue-900/40 rounded-xl space-y-3">
+                <div class="bg-blue-950/40 border border-blue-700/40 rounded-xl p-3 text-xs text-blue-200 space-y-1.5">
+                    <div class="font-bold text-sm text-blue-300 flex items-center gap-1.5">
+                        <span>🔑</span> Comment obtenir votre jeton Google Keep en 30 secondes :
+                    </div>
+                    <ol class="list-decimal list-inside space-y-1 text-slate-300">
+                        <li>Ouvrez dans un onglet : <a href="https://accounts.google.com/EmbeddedSetup" target="_blank" class="text-blue-400 underline font-semibold">https://accounts.google.com/EmbeddedSetup</a></li>
+                        <li>Connectez-vous avec votre compte Google habituel.</li>
+                        <li>Sur la page blanche finale : appuyez sur <kbd class="bg-slate-800 px-1.5 py-0.5 rounded border border-slate-700 text-amber-300 font-mono">F12</kbd> &gt; onglet <strong>Application</strong> (ou <strong>Stockage</strong> sur Firefox) &gt; menu de gauche <strong>Cookies</strong> &gt; <code class="text-slate-400">https://accounts.google.com</code>.</li>
+                        <li>Copiez la valeur du cookie nommé <strong class="text-emerald-400 font-mono">oauth_token</strong> (commence par <code class="text-emerald-400 font-semibold">oauth2_4/...</code>).</li>
+                        <li>Collez-la ci-dessous et cliquez sur <strong>Tester Google Keep</strong> : le jeton est validé et enregistré à vie !</li>
+                    </ol>
                 </div>
-                <div>
-                    <label class="block text-xs font-semibold text-slate-400 mb-1">Mot de passe d'application Google (16 lettres)</label>
-                    <input type="password" name="google_app_password" value="{settings.get('google_app_password', '')}" class="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm text-white">
+
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-400 mb-1">E-mail Gmail</label>
+                        <input type="email" id="googleEmailInput" name="google_email" value="{settings.get('google_email', '')}" class="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm text-white">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-400 mb-1">Jeton Google Keep (oauth2_4/... ou aas_et/...)</label>
+                        <input type="password" id="googleTokenInput" name="google_app_password" value="{settings.get('google_master_token') or settings.get('google_app_password', '')}" placeholder="oauth2_4/... ou aas_et/..." class="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm text-white font-mono">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-400 mb-1">Titre de la note Keep</label>
+                        <input type="text" id="keepTitleInput" name="keep_note_title" value="{settings.get('keep_note_title', 'Liste de courses')}" class="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm text-white">
+                    </div>
                 </div>
+
+                <div class="flex items-center gap-3">
+                    <button type="button" onclick="testKeepConnection()" id="btnTestKeep" class="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs py-2 px-4 rounded-xl transition flex items-center gap-1.5">
+                        🔍 Tester la connexion Google Keep
+                    </button>
+                    <span id="keepTestStatus" class="text-xs"></span>
+                </div>
+            </div>
+
+            <!-- Home Assistant Todo Config -->
+            <div id="haTodoBlock" class="hidden p-4 bg-slate-950/70 border border-slate-800 rounded-xl">
+                <label class="block text-xs font-semibold text-slate-400 mb-1">Entité Todo Home Assistant</label>
+                <input type="text" name="todo_entity_id" value="{settings.get('todo_entity_id', 'todo.shopping_list')}" placeholder="todo.shopping_list" class="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm text-white font-mono">
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-slate-800">
                 <div>
                     <label class="block text-xs font-semibold text-slate-400 mb-1">Fournisseur IA</label>
                     <select name="ai_provider" class="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm text-white">
@@ -584,7 +627,7 @@ async def serve_ui(request: Request):
                 </div>
                 <div>
                     <label class="block text-xs font-semibold text-slate-400 mb-1">Entité HA (si conversation.* sélectionné)</label>
-                    <input type="text" name="conversation_entity" value="{settings.get('conversation_entity', '')}" placeholder="conversation.home_assistant" class="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm text-white">
+                    <input type="text" name="conversation_entity" value="{settings.get('conversation_entity', '')}" placeholder="conversation.home_assistant" class="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm text-white font-mono">
                 </div>
                 <div>
                     <label class="block text-xs font-semibold text-slate-400 mb-1">URL Ollama</label>
@@ -613,6 +656,57 @@ async def serve_ui(request: Request):
             document.getElementById('content-' + tabId).classList.remove('hidden');
             document.getElementById('tab-' + tabId).classList.add('text-blue-400', 'border-b-2', 'border-blue-500');
             document.getElementById('tab-' + tabId).classList.remove('text-slate-400');
+        }}
+
+        function toggleListFields() {{
+            const val = document.getElementById('listSourceSelect').value;
+            if (val === 'google_keep') {{
+                document.getElementById('googleKeepBlock').classList.remove('hidden');
+                document.getElementById('haTodoBlock').classList.add('hidden');
+            }} else {{
+                document.getElementById('googleKeepBlock').classList.add('hidden');
+                document.getElementById('haTodoBlock').classList.remove('hidden');
+            }}
+        }}
+        toggleListFields();
+
+        function testKeepConnection() {{
+            const btn = document.getElementById('btnTestKeep');
+            const statusSpan = document.getElementById('keepTestStatus');
+            btn.disabled = true;
+            btn.innerText = '⏳ Vérification...';
+            statusSpan.innerText = '';
+            
+            const email = document.getElementById('googleEmailInput').value;
+            const token = document.getElementById('googleTokenInput').value;
+            const title = document.getElementById('keepTitleInput').value;
+
+            fetch(rootPath + '/api/test_keep', {{
+                method: 'POST',
+                headers: {{ 'Content-Type': 'application/json' }},
+                body: JSON.stringify({{ google_email: email, google_app_password: token, keep_note_title: title }})
+            }})
+            .then(r => r.json())
+            .then(d => {{
+                if (d.status === 'ok') {{
+                    statusSpan.className = 'text-xs text-emerald-400 font-bold';
+                    statusSpan.innerText = d.message;
+                    if (d.master_token) {{
+                        document.getElementById('googleTokenInput').value = d.master_token;
+                    }}
+                }} else {{
+                    statusSpan.className = 'text-xs text-rose-400 font-semibold';
+                    statusSpan.innerText = '❌ ' + d.message;
+                }}
+            }})
+            .catch(err => {{
+                statusSpan.className = 'text-xs text-rose-400 font-semibold';
+                statusSpan.innerText = '❌ Erreur réseau : ' + err;
+            }})
+            .finally(() => {{
+                btn.disabled = false;
+                btn.innerText = '🔍 Tester la connexion Google Keep';
+            }});
         }}
 
         function triggerRun() {{
@@ -744,6 +838,34 @@ async def api_import_token(payload: dict):
 async def api_save_settings(payload: dict):
     save_settings(payload)
     return {"status": "ok", "message": "Paramètres enregistrés avec succès !"}
+
+
+@app.post("/api/test_keep")
+async def api_test_keep(payload: dict):
+    email = str(payload.get("google_email", "")).strip()
+    token_input = str(payload.get("google_app_password", "")).strip()
+    title = str(payload.get("keep_note_title", "Liste de courses")).strip() or "Liste de courses"
+
+    if not email or not token_input:
+        return {"status": "error", "message": "Veuillez renseigner votre adresse Gmail et le jeton Google Keep."}
+
+    try:
+        master_tok = resolve_google_keep_master_token(email, token_input)
+        save_settings({
+            "google_email": email,
+            "google_master_token": master_tok,
+            "google_app_password": master_tok,
+            "keep_note_title": title,
+        })
+        items = fetch_google_keep_items(email, master_tok, title)
+        preview = f" (ex: {', '.join(items[:3])})" if items else ""
+        return {
+            "status": "ok",
+            "master_token": master_tok,
+            "message": f"🎉 Connexion réussie à Google Keep ! Note '{title}' trouvée ({len(items)} article(s) à cocher){preview}.",
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 
 @app.get("/api/screenshot")

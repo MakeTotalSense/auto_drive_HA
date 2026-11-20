@@ -56,8 +56,26 @@ Vous pouvez configurer l'Add-on soit depuis l'onglet **Configuration** de l'Add-
 | `magasin_slug` | Ville, Code Postal ou URL de votre Drive (laisser vide pour auto-détection) |
 | `list_source` | `google_keep` ou `ha_todo` (liste de courses native HA) |
 | `google_email` | Votre adresse Gmail (si Google Keep sélectionné) |
-| `google_app_password` | Mot de passe d'application Google (16 lettres généré dans votre compte Google) |
+| `google_app_password` | Jeton Google Keep (`oauth2_4/...` ou `aas_et/...`) |
 | `ai_provider` | `ollama` (qwen2.5:1.5b par défaut) ou `conversation_entity` (agent IA de Home Assistant) |
+
+---
+
+### 🔑 Comment connecter Google Keep (en 30 secondes)
+
+Google ayant récemment bloqué les mots de passe d'application sur son API Android (`BadAuthentication`), il suffit de récupérer votre jeton Google Keep officiel :
+
+1. Ouvrez ce lien officiel Google dans votre navigateur :
+   👉 **[https://accounts.google.com/EmbeddedSetup](https://accounts.google.com/EmbeddedSetup)**
+2. Connectez-vous à votre compte Google habituel.
+3. Sur la page blanche finale qui s'affiche à la fin :
+   - Appuyez sur **`F12`**
+   - Allez dans l'onglet **Application** (ou **Stockage** sur Firefox) > menu de gauche **Cookies** > cliquez sur `https://accounts.google.com`.
+   - Copiez la valeur du cookie nommé **`oauth_token`** (qui commence par `oauth2_4/...`).
+4. Dans l'Add-on (onglet **⚙️ Configuration**), collez cette valeur et cliquez sur **🔍 Tester la connexion Google Keep** :
+   - L'Add-on échange automatiquement ce jeton contre un **Master Token permanent (`aas_et/...`)** et vous affiche le nombre d'articles trouvés dans votre note ! Vous n'aurez plus jamais à le refaire.
+
+*(Note : si vous préférez ne pas utiliser Google Keep, vous pouvez aussi choisir la source `ha_todo` pour utiliser directement la liste de courses native de Home Assistant).*
 
 ---
 
