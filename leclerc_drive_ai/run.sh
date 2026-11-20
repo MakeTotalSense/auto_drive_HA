@@ -3,6 +3,10 @@ set -e
 
 echo "[INFO] Démarrage de l'Add-on E.Leclerc Drive AI..."
 
+# Lancement de Xvfb (Virtual Framebuffer X11) pour Chromium
+export DISPLAY=:99
+Xvfb :99 -screen 0 1366x900x24 -ac > /dev/null 2>&1 &
+
 # Création du stockage persistant pour les modèles Ollama dans /data
 mkdir -p /data/ollama/models
 export OLLAMA_MODELS=/data/ollama/models

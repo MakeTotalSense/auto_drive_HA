@@ -431,7 +431,7 @@ async def serve_ui(request: Request):
             <h1 class="text-2xl md:text-3xl font-extrabold text-blue-400 flex items-center gap-2">
                 🛒 E.Leclerc Drive AI
                 <span class="badge bg-blue-900 text-blue-200 text-xs">Add-on Ingress</span>
-                <span class="badge bg-emerald-900/80 text-emerald-300 text-xs border border-emerald-700/50">v1.4.0</span>
+                <span class="badge bg-emerald-900/80 text-emerald-300 text-xs border border-emerald-700/50">v1.4.1</span>
             </h1>
             <p class="text-sm text-slate-400 mt-1">Assistant intelligent avec rotation des viandes, saisonnalité & anti-bridage</p>
         </div>

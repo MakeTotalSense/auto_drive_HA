@@ -42,7 +42,9 @@ CHROME_ARGS = [
     "--no-sandbox",
     "--disable-dev-shm-usage",
     "--disable-gpu",
-    "--headless=new",
+    "--disable-setuid-sandbox",
+    "--no-first-run",
+    "--no-default-browser-check",
     "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
 ]
 
@@ -703,11 +705,13 @@ class LeclercEngine:
             return 0
 
     def _cleanup_locks(self) -> None:
-        for lock_name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+        if not self.session_dir.exists():
+            return
+        for lock_name in ("SingletonLock", "SingletonSocket", "SingletonCookie", "DevToolsActivePort"):
             lock_path = self.session_dir / lock_name
             try:
-                if os.path.lexists(lock_path):
-                    os.unlink(lock_path)
+                if lock_path.is_symlink() or lock_path.exists():
+                    lock_path.unlink()
             except Exception:
                 pass
 
@@ -742,9 +746,10 @@ class LeclercEngine:
         self._playwright = sync_playwright().start()
 
         chrome_exe = find_chrome_executable()
+        is_docker = Path("/.dockerenv").exists() or Path("/data").exists() or bool(os.getenv("SUPERVISOR_TOKEN"))
         launch_kwargs = {
             "user_data_dir": str(self.session_dir),
-            "headless": False,
+            "headless": True if is_docker else False,
             "ignore_default_args": ["--enable-automation"],
             "args": list(CHROME_ARGS),
             "viewport": {"width": 1366, "height": 900},
@@ -882,7 +887,6 @@ class LeclercEngine:
                 self.magasin_slug = slug_m.group(1)
                 self.log(f"📍 Magasin E.Leclerc auto-détecté : {self.magasin_slug}")
             self.log(f"✅ Session E.Leclerc connectée ({state['user_name']}) | Panier : {state['cart_count']} art. ({state['cart_total']})")
-            self.close()
             return {"status": "connected", "user_name": state["user_name"], "cart_total": state["cart_total"], "cart_count": state["cart_count"]}
 
         if not email or not password:
@@ -943,7 +947,6 @@ class LeclercEngine:
             return {"status": "otp_required", "message": "Code de sécurité à 6 chiffres envoyé par e-mail."}
 
         state = self.get_cart_and_auth_state(page)
-        self.close()
         if state["connected"]:
             self.log(f"🎉 Connexion réussie pour {state['user_name']} !")
             return {"status": "connected", "user_name": state["user_name"], "cart_total": state["cart_total"], "cart_count": state["cart_count"]}

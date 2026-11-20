@@ -18,6 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     zstd \
     procps \
     pciutils \
+    xvfb \
     && rm -rf /var/lib/apt/lists/*
 
 # Installation officielle d'Ollama (détection auto amd64/arm64)
