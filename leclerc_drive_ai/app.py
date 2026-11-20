@@ -403,7 +403,7 @@ async def serve_ui(request: Request):
             <h1 class="text-2xl md:text-3xl font-extrabold text-blue-400 flex items-center gap-2">
                 🛒 E.Leclerc Drive AI
                 <span class="badge bg-blue-900 text-blue-200 text-xs">Add-on Ingress</span>
-                <span class="badge bg-emerald-900/80 text-emerald-300 text-xs border border-emerald-700/50">v1.1.0</span>
+                <span class="badge bg-emerald-900/80 text-emerald-300 text-xs border border-emerald-700/50">v1.2.0</span>
             </h1>
             <p class="text-sm text-slate-400 mt-1">Assistant intelligent avec rotation des viandes, saisonnalité & anti-bridage</p>
         </div>
@@ -618,6 +618,32 @@ async def serve_ui(request: Request):
                 <input type="text" name="todo_entity_id" value="{settings.get('todo_entity_id', 'todo.shopping_list')}" placeholder="todo.shopping_list" class="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-sm text-white font-mono">
             </div>
 
+            <!-- Historique des commandes -->
+            <div class="bg-slate-950/70 p-4 border border-slate-800 rounded-xl space-y-3">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <h4 class="font-bold text-sm text-slate-200 flex items-center gap-2">
+                            📦 Historique des commandes E.Leclerc
+                            <span id="historyOrdersCountBadge" class="badge bg-slate-800 text-slate-300 text-xs">{stats.get('orders_count', 0)} commande(s)</span>
+                        </h4>
+                        <p class="text-xs text-slate-400 mt-0.5">Permet à l'IA d'apprendre vos habitudes (quantités, marques favorites, rotation des viandes, fruits de saison).</p>
+                    </div>
+                </div>
+                <div class="flex flex-wrap items-center gap-3 pt-1">
+                    <input type="file" id="historyFileInput" accept=".json" onchange="uploadHistoryFile(event)" class="hidden">
+                    <button type="button" onclick="document.getElementById('historyFileInput').click()" class="bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs py-2 px-3.5 rounded-xl transition flex items-center gap-1.5 shadow">
+                        📁 Importer un fichier history.json
+                    </button>
+                    <button type="button" onclick="triggerSync()" class="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-semibold text-xs py-2 px-3.5 rounded-xl transition flex items-center gap-1.5">
+                        🔄 Aspirer depuis Leclerc Drive
+                    </button>
+                    <a href="{root_path}/api/export_history" download="history.json" class="bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-xs py-2 px-3 rounded-xl transition flex items-center gap-1.5">
+                        💾 Exporter history.json
+                    </a>
+                    <span id="historyUploadStatus" class="text-xs"></span>
+                </div>
+            </div>
+
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-slate-800">
                 <div>
                     <label class="block text-xs font-semibold text-slate-400 mb-1">Fournisseur IA</label>
@@ -708,6 +734,48 @@ async def serve_ui(request: Request):
                 btn.disabled = false;
                 btn.innerText = '🔍 Tester la connexion Google Keep';
             }});
+        }}
+
+        function uploadHistoryFile(event) {{
+            const file = event.target.files[0];
+            if (!file) return;
+            const statusSpan = document.getElementById('historyUploadStatus');
+            statusSpan.className = 'text-xs text-amber-300 font-semibold';
+            statusSpan.innerText = '⏳ Lecture du fichier...';
+
+            const reader = new FileReader();
+            reader.onload = function(e) {{
+                try {{
+                    const parsed = JSON.parse(e.target.result);
+                    statusSpan.innerText = '⏳ Importation en cours...';
+                    fetch(rootPath + '/api/upload_history', {{
+                        method: 'POST',
+                        headers: {{ 'Content-Type': 'application/json' }},
+                        body: JSON.stringify(parsed)
+                    }})
+                    .then(r => r.json())
+                    .then(d => {{
+                        if (d.status === 'ok') {{
+                            statusSpan.className = 'text-xs text-emerald-400 font-bold';
+                            statusSpan.innerText = '✅ ' + d.message;
+                            const badge = document.getElementById('historyOrdersCountBadge');
+                            if (badge) badge.innerText = d.orders_count + ' commande(s)';
+                            setTimeout(() => {{ window.location.reload(); }}, 1500);
+                        }} else {{
+                            statusSpan.className = 'text-xs text-rose-400 font-semibold';
+                            statusSpan.innerText = '❌ ' + d.message;
+                        }}
+                    }})
+                    .catch(err => {{
+                        statusSpan.className = 'text-xs text-rose-400 font-semibold';
+                        statusSpan.innerText = '❌ Erreur réseau : ' + err;
+                    }});
+                }} catch (parseErr) {{
+                    statusSpan.className = 'text-xs text-rose-400 font-semibold';
+                    statusSpan.innerText = '❌ Fichier JSON invalide.';
+                }}
+            }};
+            reader.readAsText(file);
         }}
 
         function triggerRun() {{
@@ -811,12 +879,50 @@ async def trigger_sync():
         with RUN_LOCK:
             IS_RUNNING = True
             try:
-                engine.scrape_order_history(15)
+                cfg = load_settings()
+                engine.set_store(cfg.get("magasin_slug", ""))
+                broadcast_log("🔄 Démarrage de l'aspiration des commandes E.Leclerc Drive...")
+                conn = engine.login_leclerc(cfg.get("leclerc_email", ""), cfg.get("leclerc_password", ""))
+                if conn.get("status") != "connected":
+                    broadcast_log(f"⚠️ Connexion E.Leclerc requise pour aspirer : {conn.get('message', 'Non connecté')}")
+                    return
+                res = engine.scrape_order_history(15)
+                broadcast_log(f"🎉 Aspiration terminée : {res.get('saved_orders', 0)} commande(s) récupérée(s) ({res.get('total_orders', 0)} au total).")
+            except Exception as e:
+                broadcast_log(f"⚠️ Erreur lors de l'aspiration : {e}")
             finally:
                 IS_RUNNING = False
 
     threading.Thread(target=_sync, daemon=True).start()
     return {"status": "started", "message": "Synchronisation de l'historique démarrée !"}
+
+
+@app.post("/api/upload_history")
+async def api_upload_history(payload: dict):
+    orders = payload.get("orders")
+    if not isinstance(orders, list):
+        return JSONResponse({"status": "error", "message": "Structure JSON invalide (clé 'orders' manquante)."}, status_code=400)
+
+    history = {
+        "last_updated": payload.get("last_updated") or datetime.now().strftime("%Y-%m-%d"),
+        "orders": orders,
+    }
+    engine.save_history(history)
+    broadcast_log(f"📦 Historique importé manuellement avec succès : {len(orders)} commande(s) chargée(s).")
+    return {
+        "status": "ok",
+        "orders_count": len(orders),
+        "message": f"{len(orders)} commande(s) importée(s) avec succès !",
+    }
+
+
+@app.get("/api/export_history")
+async def api_export_history():
+    hist = engine.load_history()
+    return JSONResponse(
+        content=hist,
+        headers={"Content-Disposition": "attachment; filename=history.json"}
+    )
 
 
 @app.post("/api/otp")
